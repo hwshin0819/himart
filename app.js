@@ -8,10 +8,11 @@
 const API_URL = 'https://script.google.com/macros/s/AKfycby5MF-6W4T_qoNmBGM7hSsuzJDuTBeo_s0rLAZiDGH2BC8EAqfBB1wcQRvdPFzgQZ2g/exec';
 
 // ── 전역 상태 ──────────────────────────────────────────────
-let weeklyChart = null;
-let compareMode = false;
-let lastData    = null;
-let lastCompare = null;
+let weeklyChart         = null;
+let compareMode         = false;
+let lastData            = null;
+let lastCompare         = null;
+let aggregationStartDate = null; // API에서 받은 집계시작일 (캠페인 전체 퀵버튼 기준)
 
 // ── DOM 레퍼런스 ───────────────────────────────────────────
 const $ = id => document.getElementById(id);
@@ -59,6 +60,7 @@ function shortDate(str) {
 document.addEventListener('DOMContentLoaded', () => {
   initDateInputs();
   bindEvents();
+  updateQuickBtnState(); // 기본값(이번달) 버튼 즉시 활성 표시
   loadData();
 });
 
@@ -78,6 +80,48 @@ function bindEvents() {
   ['start-date','end-date','compare-start','compare-end'].forEach(id => {
     $(id).addEventListener('keydown', e => { if (e.key === 'Enter') loadData(); });
   });
+
+  // ── 퀵 기간 선택 버튼 ──────────────────────────────────
+  // [이번달]: 이번달 1일 ~ 오늘 (기본값 리셋)
+  $('quick-this-month').addEventListener('click', () => {
+    $('start-date').value = monthStartStr();
+    $('end-date').value   = todayStr();
+    loadData();
+  });
+
+  // [캠페인 전체]: 집계시작일 ~ 오늘
+  // 집계시작일은 API 응답의 campaign_cumulative.aggregation_start_date 사용
+  // (최초 로드 전에는 버튼을 비활성화하여 클릭 방지)
+  $('quick-campaign').addEventListener('click', () => {
+    if (!aggregationStartDate) return; // 아직 API 응답 전
+    $('start-date').value = aggregationStartDate;
+    $('end-date').value   = todayStr();
+    loadData();
+  });
+
+  // date input 변경 시 퀵버튼 활성 상태 즉시 갱신
+  ['start-date', 'end-date'].forEach(id => {
+    $(id).addEventListener('change', updateQuickBtnState);
+  });
+}
+
+// 현재 date input 값과 퀵버튼 기준값을 비교해 active 클래스를 토글
+function updateQuickBtnState() {
+  const start = $('start-date').value;
+  const end   = $('end-date').value;
+  const today = todayStr();
+
+  const isThisMonth  = (start === monthStartStr() && end === today);
+  const isCampaign   = (aggregationStartDate && start === aggregationStartDate && end === today);
+
+  $('quick-this-month').classList.toggle('active', isThisMonth);
+  $('quick-campaign').classList.toggle('active', isCampaign);
+
+  // 집계시작일이 아직 없으면 캠페인 전체 버튼을 약하게 표시
+  $('quick-campaign').disabled = !aggregationStartDate;
+  $('quick-campaign').title    = aggregationStartDate
+    ? `${aggregationStartDate} ~ 오늘`
+    : '데이터 로드 후 활성화됩니다';
 }
 
 function onCompareToggle(e) {
@@ -118,6 +162,10 @@ async function loadData() {
 
     renderAll(lastData, lastCompare);
     $('last-updated').textContent = `갱신: ${new Date().toLocaleTimeString('ko-KR')}`;
+
+    // API 응답에서 집계시작일 캐시 후 퀵버튼 상태 갱신
+    aggregationStartDate = lastData?.campaign_cumulative?.aggregation_start_date || null;
+    updateQuickBtnState();
 
   } catch (err) {
     console.error(err);
@@ -273,7 +321,14 @@ function renderSection3Target(data) {
   $('v-biz-days-total').textContent = `/ ${fmt(totalBizDays)}일`;
 
   // 캠페인 누적
-  $('v-camp-start').textContent = cc.campaign_start_date          ?? '—';
+  // aggregation_start_date: 발송건수 집계 시작일 (6/12)
+  // campaign_start_date: 영업일수 계산 시작일 (6/15)
+  const campStartDisplay = cc.aggregation_start_date
+    ? (cc.aggregation_start_date !== cc.campaign_start_date
+        ? `${cc.aggregation_start_date} (집계) · ${cc.campaign_start_date} (영업일 기준)`
+        : cc.campaign_start_date)
+    : (cc.campaign_start_date ?? '—');
+  $('v-camp-start').textContent = campStartDisplay;
   $('v-camp-total').textContent = fmt(cc.total_sent_since_start);
   $('v-camp-biz').textContent   = fmt(cc.business_days_since_start);
   $('v-camp-avg').textContent   = `${fmtF1(cc.daily_avg_since_start)}건`;

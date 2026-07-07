@@ -291,6 +291,38 @@ body::after {
 .load-btn:active { transform: translateY(0); opacity: 1; }
 .load-btn:disabled { opacity: 0.45; cursor: not-allowed; transform: none; }
 
+/* 퀵 기간 선택 버튼 */
+.quick-btns {
+  display: flex;
+  gap: 5px;
+  margin-top: 5px;
+}
+.quick-btn {
+  padding: 3px 10px;
+  font-family: var(--font);
+  font-size: 0.72rem;
+  font-weight: 600;
+  color: var(--text-secondary);
+  background: var(--bg-input);
+  border: 1px solid var(--border-strong);
+  border-radius: 20px;
+  cursor: pointer;
+  transition: background var(--transition), color var(--transition), border-color var(--transition), box-shadow var(--transition);
+  white-space: nowrap;
+  line-height: 1.5;
+}
+.quick-btn:hover {
+  background: var(--blue-dim);
+  color: var(--blue);
+  border-color: var(--blue);
+}
+.quick-btn.active {
+  background: var(--blue);
+  color: #fff;
+  border-color: var(--blue);
+  box-shadow: 0 2px 8px var(--blue-glow);
+}
+
 .last-updated { font-size: 0.7rem; color: var(--text-muted); white-space: nowrap; }
 
 /* ── 메인 레이아웃 ── */
