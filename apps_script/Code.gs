@@ -19,13 +19,28 @@ const SHEET = {
 };
 
 // 스프레드시트 타임존 캐시 (성능 최적화)
+// ● 날짜 비교 원칙:
+//   모든 기간 비교는 시각을 제거한 날짜(YYYY-MM-DD) 단위로만 수행한다.
+//   시작일 00:00:00 이상, 종료일의 날짜까지 포함(<=).
+//
+// ● 타임존 원칙:
+//   getValues()로 읽은 Date 객체는 V8 런타임 내부적으로 UTC epoch 기준이므로
+//   val.getDate() 등 로컬 메서드는 스크립트 타임존(≒UTC) 기준을 반환한다.
+//   시트가 KST(UTC+9)로 설정된 경우, 아침 09:00 이전 데이터는
+//   UTC 기준으로 전날로 판정되어 기간 필터에서 탈락한다.
+//   → Utilities.formatDate(val, KST_TZ, 'yyyy-MM-dd') 로 시트 타임존 기준 날짜를 추출
+//   → 폴백은 Session.getScriptTimeZone()이 아닌 'Asia/Seoul' 하드코딩으로 안전하게 처리
+const KST_TZ = 'Asia/Seoul'; // 하이마트 운영 타임존 (UTC+9)
 let _sheetTZ = null;
 function getSheetTZ() {
   if (!_sheetTZ) {
     try {
-      _sheetTZ = SpreadsheetApp.openById(SPREADSHEET_ID).getSpreadsheetTimeZone();
+      const tz = SpreadsheetApp.openById(SPREADSHEET_ID).getSpreadsheetTimeZone();
+      // getSpreadsheetTimeZone()이 빈 문자열/null을 반환하는 경우 폴백
+      _sheetTZ = (tz && tz.trim()) ? tz.trim() : KST_TZ;
     } catch (e) {
-      _sheetTZ = Session.getScriptTimeZone();
+      // 권한 오류 등 예외 시 KST 하드코딩 (Session.getScriptTimeZone()은 UTC를 반환할 수 있음)
+      _sheetTZ = KST_TZ;
     }
   }
   return _sheetTZ;
@@ -225,16 +240,29 @@ function extractDate(val) {
   // ── 1. Date 객체 ────────────────────────────────────────
   if (val instanceof Date) {
     if (isNaN(val)) return null;
-    // Utilities.formatDate 로 스프레드시트 타임존 기준 날짜 추출
-    // → val.getDate() 직접 호용 시 스크립트 타임존(UTC)과
-    //   시트 타임존(KST) 차이로 자정~09시 사이 데이터가 전날로 판정되는 버그 발생
-    // → 이 함수가 날짜 불일치의 근본 원인임
+    // ● 날짜 비교 원칙: 시각을 제거한 날짜(YYYY-MM-DD) 단위로만 비교
+    //
+    // Apps Script getValues()가 반환하는 Date 객체는 V8 내부적으로 UTC epoch 기준.
+    // val.getDate() 등 로컬 메서드는 스크립트 런타임 타임존(UTC) 기준을 반환하므로,
+    // KST(UTC+9) 시트의 자정~09:00 사이 데이터를 전날로 오판하는 버그가 발생한다.
+    //
+    // Utilities.formatDate(val, KST 타임존, 'yyyy-MM-dd') 를 사용해
+    // 시트 타임존(KST) 기준의 날짜 문자열을 추출한 뒤 parseDate()로 변환한다.
+    // getSheetTZ()는 반드시 유효한 IANA 타임존 문자열을 반환하도록 보장됨.
     try {
-      const dateStr = Utilities.formatDate(val, getSheetTZ(), 'yyyy-MM-dd');
+      const tz      = getSheetTZ(); // 항상 유효한 IANA 타임존 (폴백: 'Asia/Seoul')
+      const dateStr = Utilities.formatDate(val, tz, 'yyyy-MM-dd');
       return parseDate(dateStr);
     } catch (e) {
-      // 폴백: 스크립트 로컈 타임존 사용
-      return new Date(val.getFullYear(), val.getMonth(), val.getDate());
+      // 최후 폴백: KST_TZ 하드코딩으로 재시도
+      try {
+        const dateStr = Utilities.formatDate(val, KST_TZ, 'yyyy-MM-dd');
+        return parseDate(dateStr);
+      } catch (e2) {
+        // 그래도 실패 시 로컬 메서드 사용 (타임존 오차 가능성 있음)
+        Logger.log(`[extractDate 폴백] val=${val}, err=${e.message}`);
+        return new Date(val.getFullYear(), val.getMonth(), val.getDate());
+      }
     }
   }
 
@@ -254,8 +282,6 @@ function extractDate(val) {
   if (!s) return null;
 
   // 3-a. 날짜+시각 부분만 잘라내기 (T 또는 공백 뒤 시각 제거)
-  //      "2026-06-30 16:17:27" → "2026-06-30"
-  //      "2026/06/30T16:17"   → "2026/06/30"
   const datePart = s.split(/[T ]/)[0];
 
   // 3-b. 점(.) 구분 → 하이픈으로 정규화 "2026.06.30" → "2026-06-30"
@@ -274,15 +300,12 @@ function extractDate(val) {
   }
 
   // 3-d. 연도가 4자리인 위치로 순서 자동 판단
-  //      "06-30-2026" (MM-DD-YYYY) 또는 "30-06-2026" (DD-MM-YYYY)
   const parts = normalized.split('-').map(p => parseInt(p, 10));
   if (parts.length === 3 && parts.every(p => !isNaN(p))) {
     let y, m, d;
     if (parts[0] > 31) {
-      // YYYY-MM-DD (이미 3-c에서 처리됐으나 혹시 대비)
       [y, m, d] = parts;
     } else if (parts[2] > 31) {
-      // MM-DD-YYYY 또는 DD-MM-YYYY → 값이 12 이하인 쪽을 월로 추정
       y = parts[2];
       if (parts[0] <= 12) { m = parts[0]; d = parts[1]; }
       else                 { m = parts[1]; d = parts[0]; }
@@ -310,14 +333,15 @@ function extractDate(val) {
 //   시작일 00:00:00 이상, 종료일의 날짜까지 포함(<=).
 //
 // ● 구현 방식: YYYYMMDD 정수 레이블 비교
-//   - formatDate 문자열 비교와 동등하지만 formatDate(null) 반환 위험 없음
-//   - getTime() 밀리초 비교보다 타임존/DST 중립 — 시각 성분에 증요
-//   - 모든 직접 생성 Date는 어떤 형태(new Date(y,m,d) / parseDate)든
-//     정수 레이블이 일치하면 반드시 in-range로 판정됨
+//   - extractDate()가 항상 new Date(y, m, d) 형태(시각=0)를 반환하므로
+//     getFullYear/getMonth/getDate 기준 정수 비교는 타임존 중립.
+//   - formatDate(null) 반환 위험 없음, DST 영향 없음.
+//   - startDate/endDate 는 parseDate()로 생성된 new Date(y,m,d) 이므로
+//     동일 기준으로 정수가 일치하면 반드시 in-range로 판정됨.
 // ============================================================
 function isInRange(date, startDate, endDate) {
   if (!date || !startDate || !endDate) return false;
-  // YYYYMMDD 정수 변환 (시각 성분 없음)
+  // YYYYMMDD 정수 변환 (시각 성분 없음 — extractDate/parseDate 반환값 기준)
   const toNum = d => d.getFullYear() * 10000 + (d.getMonth() + 1) * 100 + d.getDate();
   const dNum = toNum(date);
   const sNum = toNum(startDate);
@@ -786,18 +810,26 @@ function calcOfflineActivity(data, startDate, endDate) {
   };
 }
 
+
 // ============================================================
 // [DEBUG] debugDateFilter()
-// 앱스스크립트 편집기에서 직접 실행해 날짜 필터링 주원 진단
+// 앱스스크립트 편집기에서 직접 실행 -> 날짜 필터링 원인 진단
 //
-// 설정: QUERY_START, QUERY_END 를 실제 조회 기간으로 먹고 실행
-// 로그: Apps Script 편집기 → 실행 → 로그 확인
+// 실행: 편집기 상단 함수 선택창 -> debugDateFilter -> 실행
+// 로그: 편집기 하단 실행 로그 패널
+//
+// 출력 항목:
+//   [환경]     시트 타임존, 기준 날짜 YYYYMMDD 정수값
+//   [타임존검증] Date 셀에 대해 KST 포맷 vs .getDate() 결과 비교
+//   [기간밖]   원본 셀 값 | extractDate 결과 | 비교 기준값 | 판정 결과
+//   [기간내]   정상 샘플 5건
+//   [요약]     전체/기간내/기간밖/파싱실패 정확한 건수
+//   [진단포인트] 원인 가이드 4가지
 // ============================================================
 function debugDateFilter() {
-  // ── 조회 기간 설정 (실제 값으로 수정) ─────────────────────────
+  // 조회 기간 설정 (필요 시 수정 후 실행)
   const QUERY_START = '2026-06-15';
   const QUERY_END   = '2026-07-07';
-  // ──────────────────────────────────────────────────────
 
   const tz        = getSheetTZ();
   const startDate = parseDate(QUERY_START);
@@ -805,51 +837,99 @@ function debugDateFilter() {
   const data      = loadAllSheetData();
   const rows      = data.APPLICATIONS || [];
 
+  // YYYYMMDD 정수 변환 헬퍼 (isInRange와 동일 로직)
+  const toNum = function(d) { return d ? d.getFullYear()*10000+(d.getMonth()+1)*100+d.getDate() : 'null'; };
+
   Logger.log('========== debugDateFilter 시작 ==========');
-  Logger.log(`시트 타임존: ${tz}`);
-  Logger.log(`조회 기간: ${QUERY_START} ~ ${QUERY_END}`);
-  Logger.log(`startDate.getTime() = ${startDate.getTime()}, formatDate = ${formatDate(startDate)}`);
-  Logger.log(`endDate.getTime()   = ${endDate.getTime()},   formatDate = ${formatDate(endDate)}`);
-  Logger.log(`전체 행 수: ${rows.length}`);
+  Logger.log('[환경] 시트 타임존(getSheetTZ): "' + tz + '"');
+  Logger.log('[환경] KST_TZ 상수: "' + KST_TZ + '"');
+  Logger.log('[환경] 조회 기간: ' + QUERY_START + ' ~ ' + QUERY_END);
+  Logger.log('[환경] startDate YYYYMMDD: ' + toNum(startDate) + ' (' + formatDate(startDate) + ')');
+  Logger.log('[환경] endDate   YYYYMMDD: ' + toNum(endDate)   + ' (' + formatDate(endDate)   + ')');
+  Logger.log('[환경] 전체 행 수: ' + rows.length);
+  Logger.log('------------------------------------------------------------');
 
-  let inCnt = 0, outCnt = 0;
+  // 타임존 검증: 첫 번째 Date 객체 셀을 여러 방식으로 출력
+  var tzChecked = false;
+  for (var i = 0; i < Math.min(rows.length, 30); i++) {
+    var rawSent = rows[i]['\ucd5c\uadfc\ubc1c\uc1a1\uc77c\uc2dc'];
+    if (rawSent instanceof Date) {
+      Logger.log('[타임존검증] 최근발송일시 Date 샘플 (행' + (i+2) + '):');
+      Logger.log('  원본 Date.toString()             : ' + rawSent.toString());
+      Logger.log('  .getFullYear/Month/Date (UTC기준): ' + rawSent.getFullYear() + '-' + (rawSent.getMonth()+1) + '-' + rawSent.getDate());
+      try {
+        Logger.log('  Utilities.formatDate(KST_TZ)     : ' + Utilities.formatDate(rawSent, KST_TZ, 'yyyy-MM-dd HH:mm:ss'));
+        Logger.log('  Utilities.formatDate(tz)         : ' + Utilities.formatDate(rawSent, tz, 'yyyy-MM-dd HH:mm:ss'));
+      } catch(fe) {
+        Logger.log('  Utilities.formatDate 오류        : ' + fe.message);
+      }
+      var exResult = extractDate(rawSent);
+      Logger.log('  extractDate() 최종결과           : ' + formatDate(exResult) + ' (YYYYMMDD: ' + toNum(exResult) + ')');
+      tzChecked = true;
+      break;
+    }
+  }
+  if (!tzChecked) {
+    Logger.log('[타임존검증] Date 객체 셀 없음 -> 최근발송일시가 문자열이거나 비어있음');
+  }
+  Logger.log('------------------------------------------------------------');
 
-  rows.forEach((row, idx) => {
-    const rawSent = row['최근발송일시'];
-    const rawApp  = row['신청일시'];
-    const rawType = Object.prototype.toString.call(rawSent); // [object Date] or [object String] etc.
+  var inCnt = 0, outCnt = 0, nullCnt = 0;
 
-    const dSent   = extractDate(rawSent);
-    const dFinal  = dSent || extractDate(rawApp);
-    const usedCol = dSent ? '최근발송일시' : '신청일시';
+  rows.forEach(function(row, idx) {
+    var rawSent = row['\ucd5c\uadfc\ubc1c\uc1a1\uc77c\uc2dc'];
+    var rawApp  = row['\uc2e0\uccad\uc77c\uc2dc'];
+    var rawType = Object.prototype.toString.call(rawSent);
 
-    const inRange = dFinal && isInRange(dFinal, startDate, endDate);
+    var dSent  = extractDate(rawSent);
+    var dFinal = dSent || extractDate(rawApp);
+    var usedCol = dSent ? '\ucd5c\uadfc\ubc1c\uc1a1\uc77c\uc2dc' : (dFinal ? '\uc2e0\uccad\uc77c\uc2dc(\ud3f4\ubc31)' : 'null');
 
-    if (!inRange && outCnt < 15) {
-      // 기간 밖 샘플로깅: 원인 분석에 필요한 모든 정보
-      const rawStr = String(rawSent).substring(0, 40);
-      const dStr   = dFinal ? formatDate(dFinal) : 'null';
-      const toNum  = d => d ? d.getFullYear()*10000+(d.getMonth()+1)*100+d.getDate() : 'null';
-      Logger.log(
-        `[기간밖] 행${idx+2} | 유형=${rawType} | 값="${rawStr}" | ` +
-        `extractDate=${dStr}(${toNum(dFinal)}) | ` +
-        `start=${formatDate(startDate)}(${toNum(startDate)}) end=${formatDate(endDate)}(${toNum(endDate)}) | ` +
-        `사용컨럼=${usedCol}`
-      );
+    if (!dFinal) {
+      nullCnt++;
+      if (nullCnt <= 3) {
+        Logger.log('[파싱실패] 행' + (idx+2) + ' | 최근발송일시="' + String(rawSent).substring(0,30) + '" | 신청일시="' + String(rawApp).substring(0,30) + '"');
+      }
+      return;
+    }
+
+    var inRange = isInRange(dFinal, startDate, endDate);
+
+    if (!inRange && outCnt < 10) {
+      // 기간 밖 샘플: 원본 셀 값 | extractDate 결과 | 비교에 사용된 시작/종료 기준값 | 판정 결과
+      var rawStr  = String(rawSent).substring(0, 40);
+      var verdict = toNum(dFinal) + ' NOT IN [' + toNum(startDate) + '~' + toNum(endDate) + '] -> 기간밖';
+      Logger.log('[기간밖] 행' + (idx+2) + '\n' +
+        '  원본셀값   : "' + rawStr + '" (JS타입: ' + rawType + ')\n' +
+        '  extractDate: ' + formatDate(dFinal) + ' (YYYYMMDD: ' + toNum(dFinal) + ')\n' +
+        '  비교기준   : start=' + formatDate(startDate) + '(' + toNum(startDate) + ') ~ end=' + formatDate(endDate) + '(' + toNum(endDate) + ')\n' +
+        '  판정결과   : ' + verdict + '\n' +
+        '  사용컬럼   : ' + usedCol);
       outCnt++;
     } else if (inRange && inCnt < 5) {
-      // 기간 내 샘플: 정상 데이터는 어떻게 처리되는지 확인용
-      const rawStr = String(rawSent).substring(0, 40);
-      const dStr   = dFinal ? formatDate(dFinal) : 'null';
-      Logger.log(`[기간내] 행${idx+2} | 유형=${rawType} | 값="${rawStr}" | extractDate=${dStr} | 사용컨럼=${usedCol}`);
+      // 기간 내 샘플
+      var rawStr2 = String(rawSent).substring(0, 40);
+      Logger.log('[기간내] 행' + (idx+2) + ' | "' + rawStr2 + '" -> extractDate=' + formatDate(dFinal) + ' | 사용컬럼=' + usedCol);
       inCnt++;
     }
   });
 
-  Logger.log(`========== 요약: 기간내 ${rows.length - outCnt}에 근사, 기간밖 ${outCnt}에 근사 (15개 샘플) ==========`);
-  Logger.log('
-[다음을 확인하세요]');
-  Logger.log('1. 유형=[object Date]이면 실제 날짜와 extractDate 결과 비교 → 타임존 문제');
-  Logger.log('2. 유형=[object String]이면 문자열 파싱 경로 확인');
-  Logger.log('3. 사용컨럼=신청일시이면 최근발송일시가 null → 신청일시가 조회기간보다 이전');
+  // 정확한 집계 (전체 순회)
+  var totalOut = 0, totalIn = 0;
+  rows.forEach(function(row) {
+    var d = extractDate(row['\ucd5c\uadfc\ubc1c\uc1a1\uc77c\uc2dc']) || extractDate(row['\uc2e0\uccad\uc77c\uc2dc']);
+    if (!d) return;
+    if (isInRange(d, startDate, endDate)) totalIn++;
+    else totalOut++;
+  });
+
+  Logger.log('------------------------------------------------------------');
+  Logger.log('[요약] 전체=' + rows.length + ' | 파싱성공=' + (rows.length - nullCnt) + ' | 파싱실패=' + nullCnt);
+  Logger.log('[요약] 기간내=' + totalIn + ' | 기간밖=' + totalOut);
+  Logger.log('------------------------------------------------------------');
+  Logger.log('[진단포인트]');
+  Logger.log('1. 타임존검증에서 KST 포맷 vs .getDate() 결과가 다르면 타임존 버그 -> getSheetTZ() 확인');
+  Logger.log('2. 기간밖 행의 YYYYMMDD가 startDate보다 작으면 전날로 오판 (UTC vs KST)');
+  Logger.log('3. 사용컬럼=신청일시(폴백)이면 최근발송일시 파싱 실패 -> 신청일시가 기간 이전');
+  Logger.log('4. getSheetTZ()가 "UTC" 또는 빈 문자열이면 KST_TZ 상수("Asia/Seoul") 폴백 확인');
 }
