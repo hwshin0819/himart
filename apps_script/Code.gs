@@ -40,7 +40,8 @@ function doGet(e) {
 
     // 각 지표 계산
     // 진단 통계를 먼저 계산해두고 meta에 포함
-    const dateStats = calcDateParseStats(data);
+    // startDate/endDate도 전달해 기간 밖 행 수까지 진단
+    const dateStats = calcDateParseStats(data, startDate, endDate);
 
     const result = {
       meta: {
@@ -49,9 +50,12 @@ function doGet(e) {
         generated_at:             formatDatetime(new Date()),
         // ── 진단 필드: 날짜 파싱 현황 ──────────────────────
         // 숫자가 안 맞을 때 이 값을 먼저 확인하세요
+        // total = valid + invalid  (파싱 성공/실패)
+        // valid = in_range + outside_range  (기간 내/외)
         total_rows_in_sheet:      dateStats.total,
         rows_with_valid_date:     dateStats.valid,
         rows_with_invalid_date:   dateStats.invalid,
+        rows_outside_range:       dateStats.outsideRange,
       },
       total_agents:                calcTotalAgents(data),
       participating_agents:        calcParticipatingAgents(data, startDate, endDate),
@@ -276,9 +280,21 @@ function extractDate(val) {
 }
 
 // startDate <= date <= endDate 인지 확인
+//
+// [버그 수정] Date.getTime() 밀리초 비교 → YYYY-MM-DD 문자열 비교로 변경
+//
+// 이유: Apps Script에서 getValues()로 읽어온 Date 객체의 .getTime()과
+//       new Date(y, m, d)로 생성한 자정 Date의 .getTime()은 타임존·DST 처리
+//       방식에 따라 수 ms~수 시간 차이가 발생해 같은 날도 '기간 밖'으로
+//       판정될 수 있음. 날짜 문자열(YYYY-MM-DD)끼리만 비교하면 이 문제 완전 제거.
 function isInRange(date, startDate, endDate) {
   if (!date || !startDate || !endDate) return false;
-  return date.getTime() >= startDate.getTime() && date.getTime() <= endDate.getTime();
+  const ds = formatDate(date);      // 비교 대상 행의 날짜
+  const ss = formatDate(startDate); // 조회 시작일
+  const es = formatDate(endDate);   // 조회 종료일 (당일 전체 포함)
+  if (!ds || !ss || !es) return false;
+  // 문자열 사전순 비교 → YYYY-MM-DD 형식은 사전순 = 날짜순
+  return ds >= ss && ds <= es;
 }
 
 // ============================================================
@@ -334,25 +350,38 @@ function getFilteredApplications(data, startDate, endDate) {
 
 // ============================================================
 // 날짜 파싱 진단 통계 계산
-// → meta.total_rows_in_sheet / rows_with_valid_date / rows_with_invalid_date
+// → meta 진단 필드 4종 반환
+//   total        : APPLICATIONS 전체 행 수
+//   valid        : 날짜 파싱 성공 행 수 (최근발송일시 또는 신청일시)
+//   invalid      : 날짜 파싱 실패 행 수 (양쪽 모두 실패)
+//   outsideRange : 파싱 성공했으나 조회 기간 밖인 행 수
+//
+// 검증 공식:
+//   total  == valid + invalid
+//   valid  == (기간 내 건수) + outsideRange
 // ============================================================
-function calcDateParseStats(data) {
+function calcDateParseStats(data, startDate, endDate) {
   const rows = data.APPLICATIONS || [];
-  let valid = 0, invalid = 0;
+  let valid = 0, invalid = 0, outsideRange = 0;
 
   rows.forEach(row => {
-    const d1 = extractDate(row['최근발송일시']);
-    const d2 = extractDate(row['신청일시']);
-    if (d1 || d2) {
-      valid++;
-    } else {
+    // getFilteredApplications와 동일한 폴백 로직 사용
+    const d = extractDate(row['최근발송일시']) || extractDate(row['신청일시']);
+
+    if (!d) {
       invalid++;
-      // 파싱 실패한 행의 원본값을 로그로 기록 (디버깅용)
+      // 파싱 실패 행의 원본값 로그 기록 (디버깅용)
       Logger.log(`[날짜파싱실패] 최근발송일시='${row['최근발송일시']}' 신청일시='${row['신청일시']}'`);
+    } else {
+      valid++;
+      // startDate/endDate가 있으면 기간 밖 여부도 체크
+      if (startDate && endDate && !isInRange(d, startDate, endDate)) {
+        outsideRange++;
+      }
     }
   });
 
-  return { total: rows.length, valid, invalid };
+  return { total: rows.length, valid, invalid, outsideRange };
 }
 
 // ============================================================
