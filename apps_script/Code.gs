@@ -28,7 +28,7 @@ function doGet(e) {
     const params = e && e.parameter ? e.parameter : {};
 
     // 기준 날짜 설정 (로컬타임 기준)
-    const today = toLocalDate(new Date());
+    const today        = toLocalDate(new Date());
     const defaultStart = new Date(today.getFullYear(), today.getMonth(), 1);
     const defaultEnd   = today;
 
@@ -116,6 +116,28 @@ function loadAllSheetData() {
   }
 
   return data;
+}
+
+// ============================================================
+// 회원번호 유연 추출 유틸리티 (버그 수정 핵심)
+//
+// 시트마다 컬럼명이 다를 수 있음:
+//   - 신청관리_원본데이터: '회원번호'
+//   - 제휴중개사_사전참여: '이실장 회원번호'
+//   - 기타 시트: '회원번호' 포함 어떤 이름이든 OK
+//
+// → 행(row 객체)에서 키 이름에 '회원번호'가 포함된 컬럼을
+//   자동으로 찾아 값을 반환. 없으면 빈 문자열.
+// ============================================================
+function getMemberIdValue(row) {
+  if (!row || typeof row !== 'object') return '';
+  for (const key of Object.keys(row)) {
+    if (key.includes('회원번호')) {
+      const val = String(row[key] ?? '').trim();
+      if (val && val !== '0' && val !== 'undefined') return val;
+    }
+  }
+  return '';
 }
 
 // ============================================================
@@ -253,10 +275,11 @@ function calcTotalAgents(data) {
 
 // ============================================================
 // 2. participating_agents: 기간 내 고유 회원번호 수
+//    getMemberIdValue() 사용으로 컬럼명 유연하게 처리
 // ============================================================
 function calcParticipatingAgents(data, startDate, endDate) {
   const rows = getFilteredApplications(data, startDate, endDate);
-  const ids  = new Set(rows.map(r => String(r['회원번호']).trim()).filter(Boolean));
+  const ids  = new Set(rows.map(r => getMemberIdValue(r)).filter(Boolean));
   return ids.size;
 }
 
@@ -267,24 +290,38 @@ function calcRepeatAgents(data, startDate, endDate) {
   const rows     = getFilteredApplications(data, startDate, endDate);
   const countMap = {};
   rows.forEach(r => {
-    const id = String(r['회원번호']).trim();
+    const id = getMemberIdValue(r);
     if (id) countMap[id] = (countMap[id] || 0) + 1;
   });
   return Object.values(countMap).filter(c => c >= 2).length;
 }
 
 // ============================================================
-// 4. partner_agent_participation: 제휴중개사 참여 현황
-//    total: 제휴중개사_사전참여 전체 수
-//    active: 그중 기간 내 신청관리_원본데이터에 존재하는 회원번호 수
+// 4. partner_agent_participation: 제휴중개사 참여 현황 (버그 수정)
+//
+//    [수정 내용]
+//    - PARTNERS 시트: '이실장 회원번호' 컬럼 사용 (getMemberIdValue로 자동 감지)
+//    - APPLICATIONS 시트: '회원번호' 컬럼 사용 (동일 함수로 처리)
+//    - 양쪽 모두 String().trim()으로 공백/타입 차이 제거
 // ============================================================
 function calcPartnerParticipation(data, startDate, endDate) {
   const partners  = data.PARTNERS || [];
   const appRows   = getFilteredApplications(data, startDate, endDate);
-  const activeIds = new Set(appRows.map(r => String(r['회원번호']).trim()).filter(Boolean));
 
-  const partnerIds     = partners.map(r => String(r['회원번호']).trim()).filter(Boolean);
-  const activeCount    = partnerIds.filter(id => activeIds.has(id)).length;
+  // 기간 내 발송한 회원번호 Set (신청관리_원본데이터 기준)
+  const activeIds = new Set(
+    appRows.map(r => getMemberIdValue(r)).filter(Boolean)
+  );
+
+  // 제휴중개사 회원번호 목록 ('이실장 회원번호' 컬럼 자동 감지)
+  const partnerIds = partners
+    .map(r => getMemberIdValue(r))
+    .filter(Boolean);
+
+  // 제휴중개사 중 기간 내 활동한 수
+  const activeCount = partnerIds.filter(id => activeIds.has(id)).length;
+
+  Logger.log(`제휴중개사 매칭: 전체=${partnerIds.length}, 활동=${activeCount}, 발송IDs 샘플=${[...activeIds].slice(0,3)}, 파트너IDs 샘플=${partnerIds.slice(0,3)}`);
 
   return {
     total:  partnerIds.length,
@@ -293,20 +330,22 @@ function calcPartnerParticipation(data, startDate, endDate) {
 }
 
 // ============================================================
-// 5. top10_agents: 기간 내 발송건수 상위 10개 중개사무소
-//    (회원번호, 중개업소명, 발송건수, 제휴중개사여부)
+// 5. top10_agents: 기간 내 발송건수 상위 10개 중개사무소 (버그 수정)
+//    제휴중개사 여부 판단도 getMemberIdValue()로 유연하게 처리
 // ============================================================
 function calcTop10Agents(data, startDate, endDate) {
-  const rows      = getFilteredApplications(data, startDate, endDate);
+  const rows = getFilteredApplications(data, startDate, endDate);
+
+  // 제휴중개사 회원번호 Set 구성 (PARTNERS 시트 - '이실장 회원번호' 자동 감지)
   const partnerSet = new Set(
-    (data.PARTNERS || []).map(r => String(r['회원번호']).trim()).filter(Boolean)
+    (data.PARTNERS || []).map(r => getMemberIdValue(r)).filter(Boolean)
   );
 
   // 회원번호별 건수 집계
   const countMap = {};
   const nameMap  = {};
   rows.forEach(r => {
-    const id   = String(r['회원번호']).trim();
+    const id   = getMemberIdValue(r);
     const name = String(r['중개업소명'] || '').trim();
     if (!id) return;
     countMap[id] = (countMap[id] || 0) + 1;
@@ -446,7 +485,7 @@ function calcCampaignCumulative(data, today) {
   }
 
   // 캠페인 시작일 ~ 오늘까지 영업일수
-  const bizDays  = countBusinessDays(campaignStart, today, holidaySet);
+  const bizDays   = countBusinessDays(campaignStart, today, holidaySet);
   // 캠페인 시작일 ~ 오늘까지 총 발송건수
   const totalSent = getFilteredApplications(data, campaignStart, today).length;
   const dailyAvg  = bizDays > 0
@@ -577,21 +616,22 @@ function calcNotificationStats(data, startDate, endDate) {
   return {
     total_sent: totalSent,
     ga4_clicks: ga4Clicks,
-    ctr:        ctr, // 단위: %
+    ctr:        ctr,
   };
 }
 
 // ============================================================
 // 12. offline_target_activity: 오프라인비치대상 참여 현황
-//     total_target: 오프라인비치대상 전체 수
-//     active_count: 그중 기간 내 신청관리_원본데이터에 있는 회원번호 수
+//     (프론트엔드 섹션에서 제거됐지만 API 응답에는 유지)
 // ============================================================
 function calcOfflineActivity(data, startDate, endDate) {
   const offlineRows = data.OFFLINE || [];
   const appRows     = getFilteredApplications(data, startDate, endDate);
-  const activeIds   = new Set(appRows.map(r => String(r['회원번호']).trim()).filter(Boolean));
+  const activeIds   = new Set(
+    appRows.map(r => getMemberIdValue(r)).filter(Boolean)
+  );
 
-  const offlineIds  = offlineRows.map(r => String(r['회원번호']).trim()).filter(Boolean);
+  const offlineIds  = offlineRows.map(r => getMemberIdValue(r)).filter(Boolean);
   const activeCount = offlineIds.filter(id => activeIds.has(id)).length;
 
   return {
