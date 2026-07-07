@@ -39,11 +39,19 @@ function doGet(e) {
     const data = loadAllSheetData();
 
     // 각 지표 계산
+    // 진단 통계를 먼저 계산해두고 meta에 포함
+    const dateStats = calcDateParseStats(data);
+
     const result = {
       meta: {
-        start:        formatDate(startDate),
-        end:          formatDate(endDate),
-        generated_at: formatDatetime(new Date()),
+        start:                    formatDate(startDate),
+        end:                      formatDate(endDate),
+        generated_at:             formatDatetime(new Date()),
+        // ── 진단 필드: 날짜 파싱 현황 ──────────────────────
+        // 숫자가 안 맞을 때 이 값을 먼저 확인하세요
+        total_rows_in_sheet:      dateStats.total,
+        rows_with_valid_date:     dateStats.valid,
+        rows_with_invalid_date:   dateStats.invalid,
       },
       total_agents:                calcTotalAgents(data),
       participating_agents:        calcParticipatingAgents(data, startDate, endDate),
@@ -180,18 +188,30 @@ function toLocalDate(d) {
   return new Date(d.getFullYear(), d.getMonth(), d.getDate());
 }
 
+// ============================================================
 // 셀 값(문자열/숫자/Date 등)에서 날짜(시분초 없음)를 추출
 // 실패하면 null 반환
+//
+// [강화된 처리 목록]
+//   - Date 객체
+//   - 숫자 (시리얼 / 타임스탬프)
+//   - "2026-06-30 16:17:27"  (하이픈 구분 + 시각)
+//   - "2026/06/30 16:17"     (슬래시 구분 + 시각)
+//   - "2026.06.30"           (점 구분)
+//   - "2026-06-30"           (날짜만)
+//   - "06/30/2026"           (MM/DD/YYYY 등 연도 위치 자동 감지)
+//   - 앞뒤 공백 허용
+// ============================================================
 function extractDate(val) {
   if (val === null || val === undefined || val === '') return null;
 
-  // Date 객체인 경우
+  // ── 1. Date 객체 ────────────────────────────────────────
   if (val instanceof Date) {
     if (isNaN(val)) return null;
     return new Date(val.getFullYear(), val.getMonth(), val.getDate());
   }
 
-  // 숫자인 경우 (스프레드시트 시리얼 날짜 또는 타임스탬프)
+  // ── 2. 숫자 (스프레드시트 시리얼 날짜 또는 타임스탬프) ──
   if (typeof val === 'number') {
     const d = new Date(val);
     if (!isNaN(d) && d.getFullYear() > 1900) {
@@ -200,16 +220,56 @@ function extractDate(val) {
     return null;
   }
 
-  // 문자열인 경우
-  if (typeof val === 'string') {
-    // 'YYYY-MM-DD' 또는 'YYYY/MM/DD' 형식 직접 파싱
-    const directParsed = parseDate(val.split(' ')[0].split('T')[0]);
-    if (directParsed) return directParsed;
-    // 그 외 문자열은 Date 생성자로 시도
-    const d = new Date(val);
-    if (!isNaN(d) && d.getFullYear() > 1900) {
-      return new Date(d.getFullYear(), d.getMonth(), d.getDate());
+  // ── 3. 문자열 ───────────────────────────────────────────
+  if (typeof val !== 'string') return null;
+
+  const s = val.trim();
+  if (!s) return null;
+
+  // 3-a. 날짜+시각 부분만 잘라내기 (T 또는 공백 뒤 시각 제거)
+  //      "2026-06-30 16:17:27" → "2026-06-30"
+  //      "2026/06/30T16:17"   → "2026/06/30"
+  const datePart = s.split(/[T ]/)[0];
+
+  // 3-b. 점(.) 구분 → 하이픈으로 정규화 "2026.06.30" → "2026-06-30"
+  const normalized = datePart.replace(/\./g, '-').replace(/\//g, '-');
+
+  // 3-c. YYYY-MM-DD 패턴 직접 파싱
+  const isoMatch = normalized.match(/^(\d{4})-(\d{1,2})-(\d{1,2})$/);
+  if (isoMatch) {
+    const y = parseInt(isoMatch[1], 10);
+    const m = parseInt(isoMatch[2], 10) - 1;
+    const d = parseInt(isoMatch[3], 10);
+    if (!isNaN(y) && !isNaN(m) && !isNaN(d)) {
+      const result = new Date(y, m, d);
+      if (!isNaN(result) && result.getFullYear() > 1900) return result;
     }
+  }
+
+  // 3-d. 연도가 4자리인 위치로 순서 자동 판단
+  //      "06-30-2026" (MM-DD-YYYY) 또는 "30-06-2026" (DD-MM-YYYY)
+  const parts = normalized.split('-').map(p => parseInt(p, 10));
+  if (parts.length === 3 && parts.every(p => !isNaN(p))) {
+    let y, m, d;
+    if (parts[0] > 31) {
+      // YYYY-MM-DD (이미 3-c에서 처리됐으나 혹시 대비)
+      [y, m, d] = parts;
+    } else if (parts[2] > 31) {
+      // MM-DD-YYYY 또는 DD-MM-YYYY → 값이 12 이하인 쪽을 월로 추정
+      y = parts[2];
+      if (parts[0] <= 12) { m = parts[0]; d = parts[1]; }
+      else                 { m = parts[1]; d = parts[0]; }
+    }
+    if (y && m && d) {
+      const result = new Date(y, m - 1, d);
+      if (!isNaN(result) && result.getFullYear() > 1900) return result;
+    }
+  }
+
+  // 3-e. 최후 수단: JS Date 생성자 (KST 등 로케일 영향 있으나 폴백으로)
+  const fallback = new Date(s);
+  if (!isNaN(fallback) && fallback.getFullYear() > 1900) {
+    return new Date(fallback.getFullYear(), fallback.getMonth(), fallback.getDate());
   }
 
   return null;
@@ -257,13 +317,42 @@ function countBusinessDays(startDate, endDate, holidaySet) {
 
 // ============================================================
 // 신청관리_원본데이터에서 기간 필터링된 행 반환
+//
 // 기준 컬럼: 최근발송일시
+//   → 파싱 실패 시 신청일시로 폴백(fallback)
+//   → 둘 다 실패한 행만 제외
 // ============================================================
 function getFilteredApplications(data, startDate, endDate) {
   return (data.APPLICATIONS || []).filter(row => {
-    const d = extractDate(row['최근발송일시']);
+    // 1차: 최근발송일시 파싱 시도
+    let d = extractDate(row['최근발송일시']);
+    // 2차 폴백: 최근발송일시 실패 시 신청일시 사용
+    if (!d) d = extractDate(row['신청일시']);
     return d && isInRange(d, startDate, endDate);
   });
+}
+
+// ============================================================
+// 날짜 파싱 진단 통계 계산
+// → meta.total_rows_in_sheet / rows_with_valid_date / rows_with_invalid_date
+// ============================================================
+function calcDateParseStats(data) {
+  const rows = data.APPLICATIONS || [];
+  let valid = 0, invalid = 0;
+
+  rows.forEach(row => {
+    const d1 = extractDate(row['최근발송일시']);
+    const d2 = extractDate(row['신청일시']);
+    if (d1 || d2) {
+      valid++;
+    } else {
+      invalid++;
+      // 파싱 실패한 행의 원본값을 로그로 기록 (디버깅용)
+      Logger.log(`[날짜파싱실패] 최근발송일시='${row['최근발송일시']}' 신청일시='${row['신청일시']}'`);
+    }
+  });
+
+  return { total: rows.length, valid, invalid };
 }
 
 // ============================================================
