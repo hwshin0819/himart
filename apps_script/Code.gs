@@ -632,13 +632,29 @@ function calcMonthlyTarget(data, today) {
 }
 
 // ============================================================
-// 7. campaign_cumulative: 캠페인 시작일부터 오늘까지 누적 통계
-//    캠페인시작일은 월평균거래완료건수 시트에서 읽음
+// 7. campaign_cumulative: 캠페인 누적 통계
+//
+// ● 시작일 개념 분리:
+//   - 집계시작일(aggregation_start_date): 발송건수 집계 기준
+//       → 월평균거래완료건수 시트 "집계시작일" 컬럼 (예: 2026-06-12)
+//       → 컬럼이 비어있으면 캠페인시작일로 폴백 (하위 호환)
+//   - 캠페인시작일(campaign_start_date): 영업일수(분모) 계산 기준
+//       → 월평균거래완료건수 시트 "캠페인시작일" 컬럼 (예: 2026-06-15)
+//
+// ● 계산 공식:
+//   total_sent_since_start    = 집계시작일 ~ 오늘 발송건수
+//   business_days_since_start = 캠페인시작일 ~ 오늘 영업일수
+//   daily_avg_since_start     = total_sent ÷ business_days
+//
+// ● 구글 시트 설정:
+//   "월평균거래완료건수" 탭에 "집계시작일" 컬럼 추가
+//   (기존 "캠페인시작일" 옆에 배치)
+//   집계시작일 = 2026-06-12 / 캠페인시작일 = 2026-06-15
 // ============================================================
 function calcCampaignCumulative(data, today) {
   const holidaySet = buildHolidaySet(data);
 
-  // 캠페인시작일 추출 (첫 번째로 유효한 값)
+  // ── 캠페인시작일 추출 (영업일수 기준) ─────────────────────────
   let campaignStart = null;
   for (const row of (data.MONTHLY_TXN || [])) {
     const d = extractDate(row['캠페인시작일']);
@@ -647,6 +663,7 @@ function calcCampaignCumulative(data, today) {
 
   if (!campaignStart) {
     return {
+      aggregation_start_date:    null,
       campaign_start_date:       null,
       total_sent_since_start:    0,
       business_days_since_start: 0,
@@ -654,16 +671,29 @@ function calcCampaignCumulative(data, today) {
     };
   }
 
-  // 캠페인 시작일 ~ 오늘까지 영업일수
-  const bizDays   = countBusinessDays(campaignStart, today, holidaySet);
-  // 캠페인 시작일 ~ 오늘까지 총 발송건수
-  const totalSent = getFilteredApplications(data, campaignStart, today).length;
-  const dailyAvg  = bizDays > 0
+  // ── 집계시작일 추출 (발송건수 기준) ──────────────────────────
+  // "집계시작일" 컬럼이 없거나 비어있으면 캠페인시작일로 폴백 (하위 호환)
+  let aggregationStart = null;
+  for (const row of (data.MONTHLY_TXN || [])) {
+    const d = extractDate(row['집계시작일']);
+    if (d) { aggregationStart = d; break; }
+  }
+  if (!aggregationStart) aggregationStart = campaignStart;
+
+  // ── 발송건수: 집계시작일 ~ 오늘 ─────────────────────────────
+  const totalSent = getFilteredApplications(data, aggregationStart, today).length;
+
+  // ── 영업일수: 캠페인시작일 ~ 오늘 ────────────────────────────
+  const bizDays = countBusinessDays(campaignStart, today, holidaySet);
+
+  // ── 일평균: 총 발송건수 ÷ 캠페인 영업일수 ─────────────────────
+  const dailyAvg = bizDays > 0
     ? Math.round((totalSent / bizDays) * 100) / 100
     : 0;
 
   return {
-    campaign_start_date:       formatDate(campaignStart),
+    aggregation_start_date:    formatDate(aggregationStart),  // 발송건수 집계 시작일
+    campaign_start_date:       formatDate(campaignStart),     // 영업일수 계산 시작일
     total_sent_since_start:    totalSent,
     business_days_since_start: bizDays,
     daily_avg_since_start:     dailyAvg,
