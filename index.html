@@ -1,0 +1,343 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>하이마트 제휴 대시보드 | 이실장</title>
+  <meta name="description" content="이실장 × 하이마트 쿠폰 프로모션 실적 관리 대시보드. 중개사무소 참여 현황, 월간 목표 달성, 알림톡 발송 통계를 한눈에 확인하세요." />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Pretendard:wght@300;400;500;600;700;800&display=swap" rel="stylesheet" />
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.3/dist/chart.umd.min.js"></script>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+
+  <!-- ======================================================
+       전체 로딩 오버레이
+  ====================================================== -->
+  <div id="loading-overlay" class="loading-overlay" role="status" aria-live="polite">
+    <div class="spinner-wrap">
+      <div class="spinner"></div>
+      <p class="loading-text">데이터를 불러오는 중입니다…</p>
+    </div>
+  </div>
+
+  <!-- ======================================================
+       에러 배너
+  ====================================================== -->
+  <div id="error-banner" class="error-banner hidden" role="alert">
+    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
+    <span id="error-msg">데이터를 불러오지 못했습니다.</span>
+    <button class="error-close" onclick="document.getElementById('error-banner').classList.add('hidden')">✕</button>
+  </div>
+
+  <!-- ======================================================
+       헤더
+  ====================================================== -->
+  <header class="site-header">
+    <div class="header-inner">
+      <div class="header-brand">
+        <div class="brand-badge">이실장 × 하이마트</div>
+        <h1 class="header-title">제휴 프로모션 대시보드</h1>
+      </div>
+
+      <div class="header-controls">
+        <!-- 기본 조회 기간 -->
+        <div class="date-group" id="primary-date-group">
+          <label class="date-label">조회 기간</label>
+          <div class="date-inputs">
+            <input type="date" id="start-date" class="date-input" aria-label="조회 시작일" />
+            <span class="date-sep">~</span>
+            <input type="date" id="end-date" class="date-input" aria-label="조회 종료일" />
+          </div>
+        </div>
+
+        <!-- 비교 기간 토글 -->
+        <label class="compare-toggle" for="compare-check">
+          <input type="checkbox" id="compare-check" />
+          <span class="toggle-track"><span class="toggle-thumb"></span></span>
+          <span class="toggle-label">기간 비교</span>
+        </label>
+
+        <!-- 비교 기간 (숨김) -->
+        <div class="date-group hidden" id="compare-date-group">
+          <label class="date-label compare-label">비교 기간</label>
+          <div class="date-inputs">
+            <input type="date" id="compare-start" class="date-input compare-date-input" aria-label="비교 시작일" />
+            <span class="date-sep">~</span>
+            <input type="date" id="compare-end" class="date-input compare-date-input" aria-label="비교 종료일" />
+          </div>
+        </div>
+
+        <button id="load-btn" class="load-btn" aria-label="데이터 조회">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="1 4 1 10 7 10"/><path d="M3.51 15a9 9 0 1 0 .49-3.5"/></svg>
+          조회
+        </button>
+
+        <!-- 마지막 갱신 시각 -->
+        <div class="last-updated" id="last-updated" aria-live="polite"></div>
+      </div>
+    </div>
+  </header>
+
+  <!-- ======================================================
+       메인 콘텐츠
+  ====================================================== -->
+  <main class="main-content" id="dashboard-content">
+
+    <!-- ────────────────────────────────────────────────────
+         섹션 1: 중개사무소 참여 현황
+    ──────────────────────────────────────────────────── -->
+    <section class="dashboard-section" id="section-agents">
+      <div class="section-header">
+        <div class="section-icon section-icon--blue">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
+        </div>
+        <h2 class="section-title">중개사무소 참여 현황</h2>
+        <div class="section-period" id="s1-period"></div>
+      </div>
+
+      <!-- KPI 카드 4개 -->
+      <div class="kpi-grid kpi-grid--4" id="agents-kpi-grid">
+        <div class="kpi-card" id="kpi-total-agents">
+          <div class="kpi-label">전체 중개사무소</div>
+          <div class="kpi-value" id="v-total-agents">—</div>
+          <div class="kpi-sub">전체 등록 중개사무소</div>
+        </div>
+        <div class="kpi-card kpi-card--accent" id="kpi-participating">
+          <div class="kpi-label">참여 중개사</div>
+          <div class="kpi-value" id="v-participating">—</div>
+          <div class="kpi-sub" id="v-participating-pct">전체 대비 —%</div>
+        </div>
+        <div class="kpi-card" id="kpi-repeat">
+          <div class="kpi-label">중복 참여</div>
+          <div class="kpi-value" id="v-repeat">—</div>
+          <div class="kpi-sub" id="v-repeat-pct">참여자 대비 —%</div>
+        </div>
+        <div class="kpi-card" id="kpi-partner">
+          <div class="kpi-label">제휴중개사 참여</div>
+          <div class="kpi-value" id="v-partner">—</div>
+          <div class="kpi-sub" id="v-partner-pct">1,000개소 중 —%</div>
+        </div>
+      </div>
+
+      <!-- 비교 모드: 증감 행 -->
+      <div class="compare-delta-row hidden" id="agents-compare-row"></div>
+
+      <!-- TOP10 테이블 -->
+      <div class="table-card">
+        <div class="table-card-header">
+          <span class="table-card-title">발송 TOP 10 중개사무소</span>
+          <span class="table-card-badge" id="top10-period-badge"></span>
+        </div>
+        <div class="table-wrap">
+          <table class="data-table" id="top10-table">
+            <thead>
+              <tr>
+                <th>순위</th>
+                <th>중개업소명</th>
+                <th>발송건수</th>
+                <th>제휴중개사</th>
+              </tr>
+            </thead>
+            <tbody id="top10-tbody">
+              <tr><td colspan="4" class="empty-row">데이터를 불러오는 중…</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
+    <!-- ────────────────────────────────────────────────────
+         섹션 2: 월간 목표 달성 현황
+    ──────────────────────────────────────────────────── -->
+    <section class="dashboard-section" id="section-target">
+      <div class="section-header">
+        <div class="section-icon section-icon--purple">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 20V10"/><path d="M12 20V4"/><path d="M6 20v-6"/></svg>
+        </div>
+        <h2 class="section-title">월간 목표 달성 현황</h2>
+        <div class="section-period" id="s2-period"></div>
+      </div>
+
+      <!-- 목표 달성 진행바 -->
+      <div class="progress-card">
+        <div class="progress-header">
+          <div class="progress-labels">
+            <span class="progress-label-main" id="prog-label-main">이번달 목표 달성률</span>
+            <span class="progress-label-ratio" id="prog-label-ratio"></span>
+          </div>
+          <div class="progress-pct" id="prog-pct">—%</div>
+        </div>
+        <div class="progress-track" role="progressbar" aria-valuemin="0" aria-valuemax="100" id="prog-track">
+          <div class="progress-fill" id="prog-fill" style="width:0%"></div>
+          <div class="progress-milestone" id="prog-milestone"></div>
+        </div>
+        <div class="progress-footer">
+          <span id="prog-actual">실적: —건</span>
+          <span id="prog-target">목표: —건</span>
+        </div>
+      </div>
+
+      <!-- KPI 카드 2행 -->
+      <div class="kpi-grid kpi-grid--3" id="target-kpi-grid">
+        <div class="kpi-card">
+          <div class="kpi-label">이번달 일평균 발송</div>
+          <div class="kpi-value kpi-value--lg" id="v-daily-avg">—</div>
+          <div class="kpi-sub">건/영업일</div>
+        </div>
+        <div class="kpi-card kpi-card--accent2">
+          <div class="kpi-label">일 목표 발송</div>
+          <div class="kpi-value kpi-value--lg" id="v-daily-target">—</div>
+          <div class="kpi-sub">건/영업일</div>
+        </div>
+        <div class="kpi-card">
+          <div class="kpi-label">경과 영업일</div>
+          <div class="kpi-value kpi-value--lg" id="v-biz-days">—</div>
+          <div class="kpi-sub" id="v-biz-days-total">/ —일</div>
+        </div>
+      </div>
+
+      <!-- 캠페인 누적 -->
+      <div class="campaign-card">
+        <div class="campaign-card-label">📊 캠페인 전체 누적 (시작일부터 오늘까지)</div>
+        <div class="campaign-stats" id="campaign-stats">
+          <div class="campaign-stat">
+            <span class="cs-label">캠페인 시작일</span>
+            <span class="cs-value" id="v-camp-start">—</span>
+          </div>
+          <div class="campaign-stat-divider"></div>
+          <div class="campaign-stat">
+            <span class="cs-label">누적 총 발송</span>
+            <span class="cs-value" id="v-camp-total">—</span>
+          </div>
+          <div class="campaign-stat-divider"></div>
+          <div class="campaign-stat">
+            <span class="cs-label">경과 영업일</span>
+            <span class="cs-value" id="v-camp-biz">—</span>
+          </div>
+          <div class="campaign-stat-divider"></div>
+          <div class="campaign-stat">
+            <span class="cs-label">캠페인 일평균</span>
+            <span class="cs-value" id="v-camp-avg">—</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- 주차별 막대그래프 + 누적선 -->
+      <div class="chart-card">
+        <div class="chart-card-header">
+          <span class="chart-card-title">주차별 발송건수 추이</span>
+          <div class="chart-legend">
+            <span class="legend-dot legend-dot--bar"></span><span>실적</span>
+            <span class="legend-dot legend-dot--line"></span><span>누적</span>
+          </div>
+        </div>
+        <div class="chart-wrap">
+          <canvas id="weekly-chart" aria-label="주차별 발송건수 차트"></canvas>
+        </div>
+      </div>
+    </section>
+
+    <!-- ────────────────────────────────────────────────────
+         섹션 3: 알림톡·안심케어 유입 현황
+    ──────────────────────────────────────────────────── -->
+    <section class="dashboard-section" id="section-notification">
+      <div class="section-header">
+        <div class="section-icon section-icon--teal">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07A19.5 19.5 0 0 1 4.07 12a19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 3 1.18h3a2 2 0 0 1 2 1.72c.127.96.361 1.903.7 2.81a2 2 0 0 1-.45 2.11L7.09 8.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45c.907.339 1.85.573 2.81.7A2 2 0 0 1 21 16z"/></svg>
+        </div>
+        <h2 class="section-title">알림톡 · 안심케어 유입 현황</h2>
+        <div class="section-period" id="s3-period"></div>
+      </div>
+
+      <!-- KPI 카드 3개 -->
+      <div class="kpi-grid kpi-grid--3">
+        <div class="kpi-card">
+          <div class="kpi-label">알림톡 총 발송</div>
+          <div class="kpi-value" id="v-total-sent">—</div>
+          <div class="kpi-sub">건</div>
+        </div>
+        <div class="kpi-card kpi-card--accent3">
+          <div class="kpi-label">안심케어 클릭 (GA4)</div>
+          <div class="kpi-value" id="v-ga4-clicks">—</div>
+          <div class="kpi-sub">클릭수</div>
+        </div>
+        <div class="kpi-card">
+          <div class="kpi-label">클릭률 (CTR)</div>
+          <div class="kpi-value" id="v-ctr">—</div>
+          <div class="kpi-sub">%</div>
+        </div>
+      </div>
+
+      <!-- 스택바: 신청구분 -->
+      <div class="stackbar-section">
+        <div class="stackbar-wrap">
+          <div class="stackbar-label-row">
+            <span class="stackbar-title">신청 구분</span>
+            <div class="stackbar-legend" id="req-type-legend"></div>
+          </div>
+          <div class="stackbar" id="req-type-bar" role="img" aria-label="신청구분 비율"></div>
+          <div class="stackbar-values" id="req-type-values"></div>
+        </div>
+
+        <!-- 스택바: 신청경로 -->
+        <div class="stackbar-wrap">
+          <div class="stackbar-label-row">
+            <span class="stackbar-title">신청 경로</span>
+            <div class="stackbar-legend" id="channel-legend"></div>
+          </div>
+          <div class="stackbar" id="channel-bar" role="img" aria-label="신청경로 비율"></div>
+          <div class="stackbar-values" id="channel-values"></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ────────────────────────────────────────────────────
+         섹션 4: 오프라인 비치 대상 발송 활동
+    ──────────────────────────────────────────────────── -->
+    <section class="dashboard-section" id="section-offline">
+      <div class="section-header">
+        <div class="section-icon section-icon--orange">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/></svg>
+        </div>
+        <h2 class="section-title">오프라인 비치 대상 발송 활동</h2>
+        <div class="section-period" id="s4-period"></div>
+      </div>
+
+      <div class="kpi-grid kpi-grid--2">
+        <div class="kpi-card kpi-card--wide">
+          <div class="kpi-label">비치 대상 중개사무소</div>
+          <div class="kpi-value" id="v-offline-total">—</div>
+          <div class="kpi-sub">하이마트 인근 21개 매장 대상</div>
+        </div>
+        <div class="kpi-card kpi-card--wide kpi-card--accent4">
+          <div class="kpi-label">발송 활동 있는 곳</div>
+          <div class="kpi-value" id="v-offline-active">—</div>
+          <div class="kpi-sub" id="v-offline-pct">대상 대비 —%</div>
+        </div>
+      </div>
+
+      <!-- 오프라인 진행바 -->
+      <div class="offline-progress-wrap">
+        <div class="progress-track">
+          <div class="progress-fill progress-fill--orange" id="offline-prog-fill" style="width:0%"></div>
+        </div>
+        <div class="progress-footer">
+          <span id="offline-prog-label">비치 대상 대비 활동률</span>
+          <span id="offline-prog-pct">—%</span>
+        </div>
+      </div>
+    </section>
+
+  </main>
+
+  <!-- 푸터 -->
+  <footer class="site-footer">
+    <p>이실장 × 하이마트 제휴 프로모션 | 내부용 대시보드</p>
+  </footer>
+
+  <script src="app.js"></script>
+</body>
+</html>

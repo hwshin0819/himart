@@ -1,0 +1,12 @@
+# 시스템 파일
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# 에디터
+.vscode/
+*.suo
+*.user
+
+# 로그
+*.log
