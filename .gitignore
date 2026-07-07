@@ -10,3 +10,18 @@ desktop.ini
 
 # 로그
 *.log
+
+# ★ 구글 서비스 계정 키 — 절대 커밋하지 않음
+watcher/service_account_key.json
+*service_account*.json
+
+# 처리 기록 (로컬 전용)
+watcher/processed_files.json
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.env
+venv/
