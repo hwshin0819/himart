@@ -18,6 +18,19 @@ const SHEET = {
   HOLIDAYS:     '공휴일마스터',
 };
 
+// 스프레드시트 타임존 캐시 (성능 최적화)
+let _sheetTZ = null;
+function getSheetTZ() {
+  if (!_sheetTZ) {
+    try {
+      _sheetTZ = SpreadsheetApp.openById(SPREADSHEET_ID).getSpreadsheetTimeZone();
+    } catch (e) {
+      _sheetTZ = Session.getScriptTimeZone();
+    }
+  }
+  return _sheetTZ;
+}
+
 // ============================================================
 // 메인 진입점: doGet(e)
 // 쿼리 파라미터 start(YYYY-MM-DD), end(YYYY-MM-DD) 수신
@@ -212,7 +225,17 @@ function extractDate(val) {
   // ── 1. Date 객체 ────────────────────────────────────────
   if (val instanceof Date) {
     if (isNaN(val)) return null;
-    return new Date(val.getFullYear(), val.getMonth(), val.getDate());
+    // Utilities.formatDate 로 스프레드시트 타임존 기준 날짜 추출
+    // → val.getDate() 직접 호용 시 스크립트 타임존(UTC)과
+    //   시트 타임존(KST) 차이로 자정~09시 사이 데이터가 전날로 판정되는 버그 발생
+    // → 이 함수가 날짜 불일치의 근본 원인임
+    try {
+      const dateStr = Utilities.formatDate(val, getSheetTZ(), 'yyyy-MM-dd');
+      return parseDate(dateStr);
+    } catch (e) {
+      // 폴백: 스크립트 로컈 타임존 사용
+      return new Date(val.getFullYear(), val.getMonth(), val.getDate());
+    }
   }
 
   // ── 2. 숫자 (스프레드시트 시리얼 날짜 또는 타임스탬프) ──
@@ -279,22 +302,27 @@ function extractDate(val) {
   return null;
 }
 
+// ============================================================
 // startDate <= date <= endDate 인지 확인
 //
-// [버그 수정] Date.getTime() 밀리초 비교 → YYYY-MM-DD 문자열 비교로 변경
+// ● 날짜 비교 원칙:
+//   모든 기간 비교는 시각을 제거한 날짜(YYYY-MM-DD) 단위로만 수행한다.
+//   시작일 00:00:00 이상, 종료일의 날짜까지 포함(<=).
 //
-// 이유: Apps Script에서 getValues()로 읽어온 Date 객체의 .getTime()과
-//       new Date(y, m, d)로 생성한 자정 Date의 .getTime()은 타임존·DST 처리
-//       방식에 따라 수 ms~수 시간 차이가 발생해 같은 날도 '기간 밖'으로
-//       판정될 수 있음. 날짜 문자열(YYYY-MM-DD)끼리만 비교하면 이 문제 완전 제거.
+// ● 구현 방식: YYYYMMDD 정수 레이블 비교
+//   - formatDate 문자열 비교와 동등하지만 formatDate(null) 반환 위험 없음
+//   - getTime() 밀리초 비교보다 타임존/DST 중립 — 시각 성분에 증요
+//   - 모든 직접 생성 Date는 어떤 형태(new Date(y,m,d) / parseDate)든
+//     정수 레이블이 일치하면 반드시 in-range로 판정됨
+// ============================================================
 function isInRange(date, startDate, endDate) {
   if (!date || !startDate || !endDate) return false;
-  const ds = formatDate(date);      // 비교 대상 행의 날짜
-  const ss = formatDate(startDate); // 조회 시작일
-  const es = formatDate(endDate);   // 조회 종료일 (당일 전체 포함)
-  if (!ds || !ss || !es) return false;
-  // 문자열 사전순 비교 → YYYY-MM-DD 형식은 사전순 = 날짜순
-  return ds >= ss && ds <= es;
+  // YYYYMMDD 정수 변환 (시각 성분 없음)
+  const toNum = d => d.getFullYear() * 10000 + (d.getMonth() + 1) * 100 + d.getDate();
+  const dNum = toNum(date);
+  const sNum = toNum(startDate);
+  const eNum = toNum(endDate);
+  return dNum >= sNum && dNum <= eNum;
 }
 
 // ============================================================
@@ -756,4 +784,72 @@ function calcOfflineActivity(data, startDate, endDate) {
     total_target: offlineIds.length,
     active_count: activeCount,
   };
+}
+
+// ============================================================
+// [DEBUG] debugDateFilter()
+// 앱스스크립트 편집기에서 직접 실행해 날짜 필터링 주원 진단
+//
+// 설정: QUERY_START, QUERY_END 를 실제 조회 기간으로 먹고 실행
+// 로그: Apps Script 편집기 → 실행 → 로그 확인
+// ============================================================
+function debugDateFilter() {
+  // ── 조회 기간 설정 (실제 값으로 수정) ─────────────────────────
+  const QUERY_START = '2026-06-15';
+  const QUERY_END   = '2026-07-07';
+  // ──────────────────────────────────────────────────────
+
+  const tz        = getSheetTZ();
+  const startDate = parseDate(QUERY_START);
+  const endDate   = parseDate(QUERY_END);
+  const data      = loadAllSheetData();
+  const rows      = data.APPLICATIONS || [];
+
+  Logger.log('========== debugDateFilter 시작 ==========');
+  Logger.log(`시트 타임존: ${tz}`);
+  Logger.log(`조회 기간: ${QUERY_START} ~ ${QUERY_END}`);
+  Logger.log(`startDate.getTime() = ${startDate.getTime()}, formatDate = ${formatDate(startDate)}`);
+  Logger.log(`endDate.getTime()   = ${endDate.getTime()},   formatDate = ${formatDate(endDate)}`);
+  Logger.log(`전체 행 수: ${rows.length}`);
+
+  let inCnt = 0, outCnt = 0;
+
+  rows.forEach((row, idx) => {
+    const rawSent = row['최근발송일시'];
+    const rawApp  = row['신청일시'];
+    const rawType = Object.prototype.toString.call(rawSent); // [object Date] or [object String] etc.
+
+    const dSent   = extractDate(rawSent);
+    const dFinal  = dSent || extractDate(rawApp);
+    const usedCol = dSent ? '최근발송일시' : '신청일시';
+
+    const inRange = dFinal && isInRange(dFinal, startDate, endDate);
+
+    if (!inRange && outCnt < 15) {
+      // 기간 밖 샘플로깅: 원인 분석에 필요한 모든 정보
+      const rawStr = String(rawSent).substring(0, 40);
+      const dStr   = dFinal ? formatDate(dFinal) : 'null';
+      const toNum  = d => d ? d.getFullYear()*10000+(d.getMonth()+1)*100+d.getDate() : 'null';
+      Logger.log(
+        `[기간밖] 행${idx+2} | 유형=${rawType} | 값="${rawStr}" | ` +
+        `extractDate=${dStr}(${toNum(dFinal)}) | ` +
+        `start=${formatDate(startDate)}(${toNum(startDate)}) end=${formatDate(endDate)}(${toNum(endDate)}) | ` +
+        `사용컨럼=${usedCol}`
+      );
+      outCnt++;
+    } else if (inRange && inCnt < 5) {
+      // 기간 내 샘플: 정상 데이터는 어떻게 처리되는지 확인용
+      const rawStr = String(rawSent).substring(0, 40);
+      const dStr   = dFinal ? formatDate(dFinal) : 'null';
+      Logger.log(`[기간내] 행${idx+2} | 유형=${rawType} | 값="${rawStr}" | extractDate=${dStr} | 사용컨럼=${usedCol}`);
+      inCnt++;
+    }
+  });
+
+  Logger.log(`========== 요약: 기간내 ${rows.length - outCnt}에 근사, 기간밖 ${outCnt}에 근사 (15개 샘플) ==========`);
+  Logger.log('
+[다음을 확인하세요]');
+  Logger.log('1. 유형=[object Date]이면 실제 날짜와 extractDate 결과 비교 → 타임존 문제');
+  Logger.log('2. 유형=[object String]이면 문자열 파싱 경로 확인');
+  Logger.log('3. 사용컨럼=신청일시이면 최근발송일시가 null → 신청일시가 조회기간보다 이전');
 }
