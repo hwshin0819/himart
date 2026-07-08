@@ -3,8 +3,7 @@
 
    [v6 변경]
    - Last Updated: 조회 시각이 아니라 데이터 업로드 시각(meta.last_data_updated_at)
-   - 퀵버튼 4개: 캠페인 전체 / 이번달 / 이번주 / 바이위클리
-     · 바이위클리: 시트 '보고일정' 탭 기반 (API biweekly_period)
+   - 퀵버튼 3개: 캠페인 전체 / 이번달 / 이번주 (v7: 바이위클리 제거, 달력 조회로 대체)
    - TOP10 테이블 2개: 전체 / 제휴중개사 기준
    - 캠페인 누적 카드에서 시작일 표기 제거
    - 월간 목표: API monthly_goal_total(예: 800건) 사용, 카드 순서 변경
@@ -26,7 +25,6 @@ let compareMode          = false;
 let lastData             = null;
 let lastCompare          = null;
 let aggregationStartDate = DEFAULT_CAMPAIGN_START; // 캠페인 전체 퀵버튼 기준
-let biweeklyPeriod       = null;                   // 바이위클리 퀵버튼 기준
 const responseCache      = new Map();              // [v6.1] 세션 내 응답 캐시 (기간별)
 
 // ── DOM 레퍼런스 ───────────────────────────────────────────
@@ -128,14 +126,6 @@ function bindEvents() {
     loadData();
   });
 
-  // [바이위클리]: 보고일정 탭 기반 (직전 보고일 ~ 다가오는 보고일 전날)
-  $('quick-biweekly').addEventListener('click', () => {
-    if (!biweeklyPeriod || !biweeklyPeriod.start || !biweeklyPeriod.end) return;
-    $('start-date').value = biweeklyPeriod.start;
-    $('end-date').value   = biweeklyPeriod.end;
-    loadData();
-  });
-
   ['start-date', 'end-date'].forEach(id => {
     $(id).addEventListener('change', updateQuickBtnState);
   });
@@ -150,26 +140,16 @@ function updateQuickBtnState() {
   const isCampaign  = (aggregationStartDate && start === aggregationStartDate && end === today);
   const isThisMonth = (start === monthStartStr() && end === today);
   const isThisWeek  = (start === weekStartStr() && end === today);
-  const isBiweekly  = (biweeklyPeriod && biweeklyPeriod.start && start === biweeklyPeriod.start && end === biweeklyPeriod.end);
 
   $('quick-campaign').classList.toggle('active', isCampaign);
   $('quick-this-month').classList.toggle('active', isThisMonth);
   $('quick-this-week').classList.toggle('active', isThisWeek);
-  $('quick-biweekly').classList.toggle('active', !!isBiweekly);
 
   // 캠페인 전체: 집계시작일 로드 전 비활성
   $('quick-campaign').disabled = !aggregationStartDate;
   $('quick-campaign').title    = aggregationStartDate
     ? `${aggregationStartDate} ~ 오늘`
     : '데이터 로드 후 활성화됩니다';
-
-  // 바이위클리: 보고일정 데이터 없으면 비활성
-  const bwOk = !!(biweeklyPeriod && biweeklyPeriod.start && biweeklyPeriod.end);
-  $('quick-biweekly').disabled = !bwOk;
-  $('quick-biweekly').title    = bwOk
-    ? `${biweeklyPeriod.start} ~ ${biweeklyPeriod.end}` +
-      (biweeklyPeriod.report_date ? ` (보고일 ${biweeklyPeriod.report_date})` : '')
-    : "시트 '보고일정' 탭에 보고일을 입력하면 활성화됩니다";
 }
 
 function onCompareToggle(e) {
@@ -218,7 +198,6 @@ async function loadData() {
 
     // API 응답에서 퀵버튼 기준값 캐시
     aggregationStartDate = lastData?.campaign_cumulative?.aggregation_start_date || null;
-    biweeklyPeriod       = lastData?.biweekly_period || null;
     updateQuickBtnState();
 
   } catch (err) {
