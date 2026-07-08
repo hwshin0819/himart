@@ -375,13 +375,10 @@ function renderSection3Target(data) {
   $('v-biz-days').textContent       = fmt(elapsedBiz);
   $('v-biz-days-total').textContent = `/ ${fmt(totalBizDays)}일`;
 
-  // 캠페인 누적 (상단 배지: 캠페인 시작일부터 고정임을 명시)
+  // 캠페인 누적
   $('v-camp-total').textContent = fmt(cc.total_sent_since_start);
   $('v-camp-biz').textContent   = fmt(cc.business_days_since_start);
   $('v-camp-avg').textContent   = `${fmtF1(cc.daily_avg_since_start)}건`;
-  $('camp-period-badge').textContent = cc.aggregation_start_date
-    ? `${shortDate(cc.aggregation_start_date)}부터 고정`
-    : '캠페인 시작부터 고정';
 
   // 차트 (조회 기간 일별)
   renderDailyChart(db);
