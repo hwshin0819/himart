@@ -44,6 +44,31 @@
       border-color: #3b7df8;
       color: #fff;
     }
+    /* [v8] 캠페인/월간 고정 기간 배지 + 서브섹션 헤더 */
+    .fixed-period-badge {
+      display: inline-block;
+      margin-left: 8px;
+      padding: 2px 10px;
+      border-radius: 6px;
+      background: rgba(124,77,255,0.1);
+      color: #7c4dff;
+      font-size: 11px;
+      font-weight: 600;
+      vertical-align: middle;
+    }
+    .subsection-header {
+      display: flex;
+      align-items: center;
+      gap: 4px;
+      margin: 20px 0 10px;
+      padding-top: 4px;
+      border-top: 1px dashed rgba(20,23,55,0.12);
+    }
+    .subsection-title {
+      font-size: 14px;
+      font-weight: 700;
+      color: #14172b;
+    }
   </style>
 </head>
 <body>
@@ -209,56 +234,21 @@
     ──────────────────────────────────────────────────── -->
     <div class="two-col-grid">
 
-      <!-- 왼쪽: 월간 목표 달성 현황 -->
+      <!-- 왼쪽: 캠페인 실적 · 목표 현황 (캠페인 전체 누적 → 월간 목표 → 일별 추이) -->
       <section class="dashboard-section" id="section-target">
         <div class="section-header">
           <div class="section-icon section-icon--purple">
             <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 20V10"/><path d="M12 20V4"/><path d="M6 20v-6"/></svg>
           </div>
-          <h2 class="section-title">월간 목표 달성 현황</h2>
-          <div class="section-period" id="s3-period"></div>
+          <h2 class="section-title">캠페인 실적 · 목표 현황</h2>
         </div>
 
-        <!-- 목표 달성 진행바 -->
-        <div class="progress-card">
-          <div class="progress-header">
-            <div class="progress-labels">
-              <span class="progress-label-main" id="prog-label-main">이번달 목표 달성률</span>
-              <span class="progress-label-ratio" id="prog-label-ratio"></span>
-            </div>
-            <div class="progress-pct" id="prog-pct">—%</div>
-          </div>
-          <div class="progress-track" role="progressbar" aria-valuemin="0" aria-valuemax="100" id="prog-track">
-            <div class="progress-fill" id="prog-fill" style="width:0%"></div>
-          </div>
-          <div class="progress-footer">
-            <span id="prog-actual">실적: —건</span>
-            <span id="prog-target">목표: —건</span>
-          </div>
-        </div>
-
-        <!-- 일평균 KPI 카드 (순서: 일 목표 → 이번달 일평균 → 경과 영업일) -->
-        <div class="kpi-grid kpi-grid--3">
-          <div class="kpi-card kpi-card--accent2">
-            <div class="kpi-label">일 목표 발송</div>
-            <div class="kpi-value kpi-value--lg" id="v-daily-target">—</div>
-            <div class="kpi-sub">건/영업일</div>
-          </div>
-          <div class="kpi-card">
-            <div class="kpi-label">이번달 일평균</div>
-            <div class="kpi-value kpi-value--lg" id="v-daily-avg">—</div>
-            <div class="kpi-sub">건/영업일</div>
-          </div>
-          <div class="kpi-card">
-            <div class="kpi-label">경과 영업일</div>
-            <div class="kpi-value kpi-value--lg" id="v-biz-days">—</div>
-            <div class="kpi-sub" id="v-biz-days-total">/ —일</div>
-          </div>
-        </div>
-
-        <!-- 캠페인 누적 (시작일 표기 제거) -->
+        <!-- 1. 캠페인 전체 누적 (항상 캠페인 시작일부터 고정) -->
         <div class="campaign-card">
-          <div class="campaign-card-label">📊 캠페인 전체 누적</div>
+          <div class="campaign-card-label">
+            📊 캠페인 전체 누적
+            <span class="fixed-period-badge" id="camp-period-badge">캠페인 시작부터</span>
+          </div>
           <div class="campaign-stats">
             <div class="campaign-stat">
               <span class="cs-label">누적 총 발송</span>
@@ -277,10 +267,52 @@
           </div>
         </div>
 
-        <!-- 일별 차트 (조회 기간 기준) -->
+        <!-- 2. 월간 목표 달성 현황 (항상 이번달 고정) -->
+        <div class="subsection-header">
+          <span class="subsection-title">월간 목표 달성 현황</span>
+          <span class="fixed-period-badge" id="month-period-badge">이번달 고정</span>
+        </div>
+
+        <div class="progress-card">
+          <div class="progress-header">
+            <div class="progress-labels">
+              <span class="progress-label-main" id="prog-label-main">이번달 목표 달성률</span>
+              <span class="progress-label-ratio" id="prog-label-ratio"></span>
+            </div>
+            <div class="progress-pct" id="prog-pct">—%</div>
+          </div>
+          <div class="progress-track" role="progressbar" aria-valuemin="0" aria-valuemax="100" id="prog-track">
+            <div class="progress-fill" id="prog-fill" style="width:0%"></div>
+          </div>
+          <div class="progress-footer">
+            <span id="prog-actual">실적: —건</span>
+            <span id="prog-target">목표: —건</span>
+          </div>
+        </div>
+
+        <div class="kpi-grid kpi-grid--3">
+          <div class="kpi-card kpi-card--accent2">
+            <div class="kpi-label">일 목표 발송</div>
+            <div class="kpi-value kpi-value--lg" id="v-daily-target">—</div>
+            <div class="kpi-sub">건/영업일</div>
+          </div>
+          <div class="kpi-card">
+            <div class="kpi-label">이번달 일평균</div>
+            <div class="kpi-value kpi-value--lg" id="v-daily-avg">—</div>
+            <div class="kpi-sub">건/영업일</div>
+          </div>
+          <div class="kpi-card">
+            <div class="kpi-label">경과 영업일</div>
+            <div class="kpi-value kpi-value--lg" id="v-biz-days">—</div>
+            <div class="kpi-sub" id="v-biz-days-total">/ —일</div>
+          </div>
+        </div>
+
+        <!-- 3. 일별 발송건수 추이 (상단에서 선택한 조회기간을 그대로 따라감) -->
         <div class="chart-card">
           <div class="chart-card-header">
             <span class="chart-card-title">일별 발송건수 추이</span>
+            <div class="section-period" id="s3-period"></div>
             <div class="chart-legend">
               <span class="legend-dot legend-dot--bar"></span><span>일별</span>
               <span class="legend-dot legend-dot--line"></span><span>누적</span>
