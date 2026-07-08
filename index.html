@@ -25,6 +25,25 @@
     .mix-grid-2x2 .kpi-card { margin: 0; }
     .top10-column .table-card + .section-header { margin-top: 24px; }
     .table-gap { height: 20px; }
+    /* [v7.2] TOP10 탭 */
+    .top10-tabs { display: inline-flex; gap: 6px; }
+    .top10-tab {
+      padding: 6px 14px;
+      border: 1px solid rgba(20,23,55,0.12);
+      border-radius: 8px;
+      background: #fff;
+      color: #4a5275;
+      font-size: 13px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: all .15s ease;
+    }
+    .top10-tab:hover { border-color: rgba(59,125,248,0.5); color: #3b7df8; }
+    .top10-tab.active {
+      background: #3b7df8;
+      border-color: #3b7df8;
+      color: #fff;
+    }
   </style>
 </head>
 <body>
@@ -258,22 +277,22 @@
           </div>
         </div>
 
-        <!-- 주차별 차트 -->
+        <!-- 일별 차트 (조회 기간 기준) -->
         <div class="chart-card">
           <div class="chart-card-header">
-            <span class="chart-card-title">주차별 발송건수 추이</span>
+            <span class="chart-card-title">일별 발송건수 추이</span>
             <div class="chart-legend">
-              <span class="legend-dot legend-dot--bar"></span><span>실적</span>
+              <span class="legend-dot legend-dot--bar"></span><span>일별</span>
               <span class="legend-dot legend-dot--line"></span><span>누적</span>
             </div>
           </div>
           <div class="chart-wrap">
-            <canvas id="weekly-chart" aria-label="주차별 발송건수 차트"></canvas>
+            <canvas id="weekly-chart" aria-label="일별 발송건수 차트"></canvas>
           </div>
         </div>
       </section>
 
-      <!-- 오른쪽: 발송 TOP10 두 개 (전체 / 제휴중개사) -->
+      <!-- 오른쪽: 발송 TOP10 (탭 전환: 전체 / 제휴중개사) -->
       <div class="top10-column">
         <div class="section-header">
           <div class="section-icon section-icon--blue">
@@ -283,48 +302,27 @@
           <div class="section-period" id="s4-period"></div>
         </div>
 
-        <!-- 전체 기준 TOP10 -->
         <div class="table-card table-card--full">
           <div class="table-card-header">
-            <span class="table-card-title">전체 기준 상위 10개소</span>
+            <!-- 탭: 전체 기준 / 제휴중개사 기준 -->
+            <div class="top10-tabs" role="tablist" aria-label="TOP10 기준 선택">
+              <button class="top10-tab active" id="top10-tab-all" role="tab" aria-selected="true">전체 기준</button>
+              <button class="top10-tab" id="top10-tab-partner" role="tab" aria-selected="false">제휴중개사 기준</button>
+            </div>
             <span class="table-card-badge" id="top10-period-badge"></span>
           </div>
           <div class="table-wrap">
             <table class="data-table" id="top10-table">
               <thead>
-                <tr>
+                <tr id="top10-thead-row">
                   <th>순위</th>
                   <th>중개업소명</th>
                   <th>발송건수</th>
-                  <th>제휴</th>
+                  <th id="top10-partner-th">제휴</th>
                 </tr>
               </thead>
               <tbody id="top10-tbody">
                 <tr><td colspan="4" class="empty-row">데이터를 불러오는 중…</td></tr>
-              </tbody>
-            </table>
-          </div>
-        </div>
-
-        <div class="table-gap"></div>
-
-        <!-- 제휴중개사 기준 TOP10 -->
-        <div class="table-card table-card--full">
-          <div class="table-card-header">
-            <span class="table-card-title">제휴중개사 기준 상위 10개소</span>
-            <span class="table-card-badge" id="top10p-period-badge"></span>
-          </div>
-          <div class="table-wrap">
-            <table class="data-table" id="top10p-table">
-              <thead>
-                <tr>
-                  <th>순위</th>
-                  <th>중개업소명</th>
-                  <th>발송건수</th>
-                </tr>
-              </thead>
-              <tbody id="top10p-tbody">
-                <tr><td colspan="3" class="empty-row">데이터를 불러오는 중…</td></tr>
               </tbody>
             </table>
           </div>
