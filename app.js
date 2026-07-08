@@ -1,5 +1,14 @@
 /* ============================================================
-   app.js — 하이마트 제휴 대시보드 메인 스크립트 (라이트 모드)
+   app.js — 하이마트 제휴 대시보드 메인 스크립트 (v6)
+
+   [v6 변경]
+   - Last Updated: 조회 시각이 아니라 데이터 업로드 시각(meta.last_data_updated_at)
+   - 퀵버튼 4개: 캠페인 전체 / 이번달 / 이번주 / 바이위클리
+     · 바이위클리: 시트 '보고일정' 탭 기반 (API biweekly_period)
+   - TOP10 테이블 2개: 전체 / 제휴중개사 기준
+   - 캠페인 누적 카드에서 시작일 표기 제거
+   - 월간 목표: API monthly_goal_total(예: 800건) 사용, 카드 순서 변경
+   - 라벨: "중복 참여" → "재참여 중개사"
 ============================================================ */
 
 'use strict';
@@ -8,11 +17,12 @@
 const API_URL = 'https://script.google.com/macros/s/AKfycby5MF-6W4T_qoNmBGM7hSsuzJDuTBeo_s0rLAZiDGH2BC8EAqfBB1wcQRvdPFzgQZ2g/exec';
 
 // ── 전역 상태 ──────────────────────────────────────────────
-let weeklyChart         = null;
-let compareMode         = false;
-let lastData            = null;
-let lastCompare         = null;
-let aggregationStartDate = null; // API에서 받은 집계시작일 (캠페인 전체 퀵버튼 기준)
+let weeklyChart          = null;
+let compareMode          = false;
+let lastData             = null;
+let lastCompare          = null;
+let aggregationStartDate = null; // 캠페인 전체 퀵버튼 기준 (API 집계시작일)
+let biweeklyPeriod       = null; // 바이위클리 퀵버튼 기준 (API biweekly_period)
 
 // ── DOM 레퍼런스 ───────────────────────────────────────────
 const $ = id => document.getElementById(id);
@@ -49,6 +59,14 @@ function monthStartStr() {
   const now = new Date();
   return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-01`;
 }
+// 이번주 시작 = 이번 주 월요일 (일요일이면 전주 월요일)
+function weekStartStr() {
+  const now = new Date();
+  const day = now.getDay();               // 일=0, 월=1 ...
+  const diff = day === 0 ? 6 : day - 1;   // 월요일까지 거슬러 갈 일수
+  const monday = new Date(now.getFullYear(), now.getMonth(), now.getDate() - diff);
+  return dateStr(monday);
+}
 function dateStr(d) { return d.toLocaleDateString('sv-SE'); }
 function shortDate(str) {
   if (!str) return '';
@@ -60,7 +78,7 @@ function shortDate(str) {
 document.addEventListener('DOMContentLoaded', () => {
   initDateInputs();
   bindEvents();
-  updateQuickBtnState(); // 기본값(이번달) 버튼 즉시 활성 표시
+  updateQuickBtnState();
   loadData();
 });
 
@@ -82,24 +100,36 @@ function bindEvents() {
   });
 
   // ── 퀵 기간 선택 버튼 ──────────────────────────────────
-  // [이번달]: 이번달 1일 ~ 오늘 (기본값 리셋)
+  // [캠페인 전체]: 집계시작일 ~ 오늘
+  $('quick-campaign').addEventListener('click', () => {
+    if (!aggregationStartDate) return;
+    $('start-date').value = aggregationStartDate;
+    $('end-date').value   = todayStr();
+    loadData();
+  });
+
+  // [이번달]: 이번달 1일 ~ 오늘
   $('quick-this-month').addEventListener('click', () => {
     $('start-date').value = monthStartStr();
     $('end-date').value   = todayStr();
     loadData();
   });
 
-  // [캠페인 전체]: 집계시작일 ~ 오늘
-  // 집계시작일은 API 응답의 campaign_cumulative.aggregation_start_date 사용
-  // (최초 로드 전에는 버튼을 비활성화하여 클릭 방지)
-  $('quick-campaign').addEventListener('click', () => {
-    if (!aggregationStartDate) return; // 아직 API 응답 전
-    $('start-date').value = aggregationStartDate;
+  // [이번주]: 이번주 월요일 ~ 오늘
+  $('quick-this-week').addEventListener('click', () => {
+    $('start-date').value = weekStartStr();
     $('end-date').value   = todayStr();
     loadData();
   });
 
-  // date input 변경 시 퀵버튼 활성 상태 즉시 갱신
+  // [바이위클리]: 보고일정 탭 기반 (직전 보고일 ~ 다가오는 보고일 전날)
+  $('quick-biweekly').addEventListener('click', () => {
+    if (!biweeklyPeriod || !biweeklyPeriod.start || !biweeklyPeriod.end) return;
+    $('start-date').value = biweeklyPeriod.start;
+    $('end-date').value   = biweeklyPeriod.end;
+    loadData();
+  });
+
   ['start-date', 'end-date'].forEach(id => {
     $(id).addEventListener('change', updateQuickBtnState);
   });
@@ -111,17 +141,29 @@ function updateQuickBtnState() {
   const end   = $('end-date').value;
   const today = todayStr();
 
-  const isThisMonth  = (start === monthStartStr() && end === today);
-  const isCampaign   = (aggregationStartDate && start === aggregationStartDate && end === today);
+  const isCampaign  = (aggregationStartDate && start === aggregationStartDate && end === today);
+  const isThisMonth = (start === monthStartStr() && end === today);
+  const isThisWeek  = (start === weekStartStr() && end === today);
+  const isBiweekly  = (biweeklyPeriod && biweeklyPeriod.start && start === biweeklyPeriod.start && end === biweeklyPeriod.end);
 
-  $('quick-this-month').classList.toggle('active', isThisMonth);
   $('quick-campaign').classList.toggle('active', isCampaign);
+  $('quick-this-month').classList.toggle('active', isThisMonth);
+  $('quick-this-week').classList.toggle('active', isThisWeek);
+  $('quick-biweekly').classList.toggle('active', !!isBiweekly);
 
-  // 집계시작일이 아직 없으면 캠페인 전체 버튼을 약하게 표시
+  // 캠페인 전체: 집계시작일 로드 전 비활성
   $('quick-campaign').disabled = !aggregationStartDate;
   $('quick-campaign').title    = aggregationStartDate
     ? `${aggregationStartDate} ~ 오늘`
     : '데이터 로드 후 활성화됩니다';
+
+  // 바이위클리: 보고일정 데이터 없으면 비활성
+  const bwOk = !!(biweeklyPeriod && biweeklyPeriod.start && biweeklyPeriod.end);
+  $('quick-biweekly').disabled = !bwOk;
+  $('quick-biweekly').title    = bwOk
+    ? `${biweeklyPeriod.start} ~ ${biweeklyPeriod.end}` +
+      (biweeklyPeriod.report_date ? ` (보고일 ${biweeklyPeriod.report_date})` : '')
+    : "시트 '보고일정' 탭에 보고일을 입력하면 활성화됩니다";
 }
 
 function onCompareToggle(e) {
@@ -161,10 +203,16 @@ async function loadData() {
     }
 
     renderAll(lastData, lastCompare);
-    $('last-updated').textContent = `갱신: ${new Date().toLocaleTimeString('ko-KR')}`;
 
-    // API 응답에서 집계시작일 캐시 후 퀵버튼 상태 갱신
+    // [v6] Last Updated: 데이터가 마지막으로 업로드된 시각 표시
+    const lastUp = lastData?.meta?.last_data_updated_at;
+    $('last-updated').textContent = lastUp
+      ? `Last Updated: ${lastUp}`
+      : `조회: ${new Date().toLocaleTimeString('ko-KR')}`;
+
+    // API 응답에서 퀵버튼 기준값 캐시
     aggregationStartDate = lastData?.campaign_cumulative?.aggregation_start_date || null;
+    biweeklyPeriod       = lastData?.biweekly_period || null;
     updateQuickBtnState();
 
   } catch (err) {
@@ -198,31 +246,67 @@ function showError(msg) { $('error-msg').textContent = msg; $('error-banner').cl
 function hideError()     { $('error-banner').classList.add('hidden'); }
 
 // ── 렌더링 총괄 ───────────────────────────────────────────
-// 섹션 순서: 알림톡(1) → 중개사 KPI(2) → 월간목표+TOP10(3)
+// 섹션 순서(v6): 중개사 참여(1, 최상단) → 신청구분/경로/안심케어 2x2(2) → 월간목표+TOP10(3)
 function renderAll(data, compare) {
   const period = `${data.meta?.start} ~ ${data.meta?.end}`;
   ['s1-period','s2-period','s3-period','s4-period'].forEach(id => {
     const el = $(id);
     if (el) el.textContent = period;
   });
-  $('top10-period-badge').textContent = period;
+  $('top10-period-badge').textContent  = period;
+  $('top10p-period-badge').textContent = period;
 
-  renderSection1Notification(data);    // 알림톡 (최상단)
-  renderSection2Agents(data, compare); // 중개사 KPI
-  renderSection3Target(data);          // 월간 목표 + TOP10
+  renderSection1Agents(data, compare);   // 중개사 참여 (최상단, 알림톡 총 발송 포함)
+  renderSection2Mix(data);               // 신청구분/경로 + GA4/CTR (2x2)
+  renderSection3Target(data);            // 월간 목표 + TOP10 x2
 }
 
-// ── 섹션 1: 알림톡·안심케어 (최상단) ─────────────────────
-function renderSection1Notification(data) {
+// ── 섹션 1: 중개사무소 참여 현황 (최상단) ─────────────────
+function renderSection1Agents(data, compare) {
+  const ns      = data.notification_stats ?? {};
+  const active  = data.participating_agents ?? 0;
+  const repeat  = data.repeat_agents ?? 0;
+  const partner = data.partner_agent_participation ?? {};
+
+  $('v-total-sent').textContent    = fmt(ns.total_sent);
+  $('v-participating').textContent = fmt(active);
+  $('v-repeat').textContent        = fmt(repeat);
+  $('v-repeat-pct').textContent    = `참여자 대비 ${fmtPct(pct(repeat, active))}`;
+  $('v-partner').textContent       = `${fmt(partner.active)} / ${fmt(partner.total)}`;
+  $('v-partner-pct').textContent   = `${fmt(partner.total)}개소 중 ${fmtPct(pct(partner.active, partner.total))}`;
+
+  if (compare) renderAgentsCompare(data, compare);
+}
+
+function renderAgentsCompare(curr, prev) {
+  const row = $('agents-compare-row');
+  row.classList.remove('hidden');
+  const items = [
+    { label: '총 발송건수',     curr: curr.notification_stats?.total_sent,      prev: prev.notification_stats?.total_sent },
+    { label: '참여 중개사',     curr: curr.participating_agents,                prev: prev.participating_agents },
+    { label: '재참여 중개사',   curr: curr.repeat_agents,                       prev: prev.repeat_agents },
+    { label: '제휴중개사 참여',  curr: curr.partner_agent_participation?.active, prev: prev.partner_agent_participation?.active },
+    { label: '안심케어 클릭',   curr: curr.notification_stats?.ga4_clicks,      prev: prev.notification_stats?.ga4_clicks },
+    { label: '클릭률(CTR)',     curr: curr.notification_stats?.ctr,             prev: prev.notification_stats?.ctr },
+  ];
+  row.innerHTML = items.map(item => {
+    const d = delta(item.curr, item.prev);
+    return `<div class="delta-card">
+      <span class="delta-label">${item.label}</span>
+      <span class="delta-value ${d.cls}">${d.txt}</span>
+    </div>`;
+  }).join('');
+}
+
+// ── 섹션 2: 신청구분/경로 + 안심케어 (2×2) ────────────────
+function renderSection2Mix(data) {
   const ns = data.notification_stats ?? {};
   const rt = data.by_request_type    ?? {};
   const ch = data.by_channel         ?? {};
 
-  $('v-total-sent').textContent = fmt(ns.total_sent);
   $('v-ga4-clicks').textContent = fmt(ns.ga4_clicks);
   $('v-ctr').textContent        = fmtF1(ns.ctr);
 
-  // 신청구분 스택바
   const rtTotal = (rt['상담신청'] ?? 0) + (rt['계약고객'] ?? 0);
   renderStackbar({
     barId:    'req-type-bar',
@@ -235,7 +319,6 @@ function renderSection1Notification(data) {
     ],
   });
 
-  // 신청경로 스택바
   const chTotal = (ch['제휴소개']?.count ?? 0) + (ch['매물리스트']?.count ?? 0);
   renderStackbar({
     barId:    'channel-bar',
@@ -249,62 +332,31 @@ function renderSection1Notification(data) {
   });
 }
 
-// ── 섹션 2: 중개사무소 참여 현황 (KPI) ───────────────────
-function renderSection2Agents(data, compare) {
-  const total   = data.total_agents ?? 0;
-  const active  = data.participating_agents ?? 0;
-  const repeat  = data.repeat_agents ?? 0;
-  const partner = data.partner_agent_participation ?? {};
-
-  $('v-total-agents').textContent    = fmt(total);
-  $('v-participating').textContent   = fmt(active);
-  $('v-participating-pct').textContent = `전체 대비 ${fmtPct(pct(active, total))}`;
-  $('v-repeat').textContent          = fmt(repeat);
-  $('v-repeat-pct').textContent      = `참여자 대비 ${fmtPct(pct(repeat, active))}`;
-  $('v-partner').textContent         = `${fmt(partner.active)} / ${fmt(partner.total)}`;
-  $('v-partner-pct').textContent     = `${fmt(partner.total)}개소 중 ${fmtPct(pct(partner.active, partner.total))}`;
-
-  if (compare) renderAgentsCompare(data, compare);
-}
-
-function renderAgentsCompare(curr, prev) {
-  const row = $('agents-compare-row');
-  row.classList.remove('hidden');
-  const items = [
-    { label: '참여 중개사',    curr: curr.participating_agents,                   prev: prev.participating_agents },
-    { label: '중복 참여',      curr: curr.repeat_agents,                          prev: prev.repeat_agents },
-    { label: '제휴중개사 참여', curr: curr.partner_agent_participation?.active,    prev: prev.partner_agent_participation?.active },
-    { label: '총 발송건수',    curr: curr.notification_stats?.total_sent,         prev: prev.notification_stats?.total_sent },
-  ];
-  row.innerHTML = items.map(item => {
-    const d = delta(item.curr, item.prev);
-    return `<div class="delta-card">
-      <span class="delta-label">${item.label}</span>
-      <span class="delta-value ${d.cls}">${d.txt}</span>
-    </div>`;
-  }).join('');
-}
-
-// ── 섹션 3: 월간 목표 달성 현황 + TOP10 ──────────────────
+// ── 섹션 3: 월간 목표 달성 현황 + TOP10 x2 ────────────────
 function renderSection3Target(data) {
-  const mt = data.monthly_target     ?? {};
+  const mt = data.monthly_target      ?? {};
   const cc = data.campaign_cumulative ?? {};
-  const wb = data.weekly_breakdown   ?? [];
+  const wb = data.weekly_breakdown    ?? [];
 
-  const totalBizDays   = mt.business_days_in_month ?? 1;
-  const elapsedBiz     = mt.elapsed_business_days  ?? 1;
-  const monthlyGoal    = mt.cumulative_target       ?? 0;
-  const actual         = mt.cumulative_actual       ?? 0;
+  const totalBizDays = mt.business_days_in_month ?? 1;
+  const elapsedBiz   = mt.elapsed_business_days  ?? 1;
+  const actual       = mt.cumulative_actual      ?? 0;
 
-  // 월 전체 목표 추산 (오늘까지 누적 목표를 기준으로 월말 선형 추정)
-  const projFullTarget = elapsedBiz > 0 ? (monthlyGoal / elapsedBiz) * totalBizDays : 0;
-  const progressPct    = projFullTarget > 0 ? Math.min((actual / projFullTarget) * 100, 150) : 0;
+  // [v6] 이번달 전체 목표: API가 직접 계산해 내려줌 (예: 80,000 × 1% = 800)
+  // 없으면 누적목표로 선형 추정 (하위 호환)
+  let monthlyGoalTotal = mt.monthly_goal_total ?? 0;
+  if (!monthlyGoalTotal) {
+    const cumTarget = mt.cumulative_target ?? 0;
+    monthlyGoalTotal = elapsedBiz > 0 ? Math.round((cumTarget / elapsedBiz) * totalBizDays) : 0;
+  }
+
+  const progressPct = monthlyGoalTotal > 0 ? Math.min((actual / monthlyGoalTotal) * 100, 150) : 0;
 
   // 진행바
-  $('prog-pct').textContent       = fmtPct(pct(actual, projFullTarget));
-  $('prog-fill').style.width      = `${Math.min(progressPct, 100)}%`;
-  $('prog-actual').textContent    = `실적: ${fmt(actual)}건`;
-  $('prog-target').textContent    = `이번달 전체 목표(추산): ${fmt(Math.round(projFullTarget))}건`;
+  $('prog-pct').textContent    = fmtPct(pct(actual, monthlyGoalTotal));
+  $('prog-fill').style.width   = `${Math.min(progressPct, 100)}%`;
+  $('prog-actual').textContent = `실적: ${fmt(actual)}건`;
+  $('prog-target').textContent = `이번달 목표: ${fmt(monthlyGoalTotal)}건`;
 
   const ratioUsed = mt.target_ratio_used ?? [];
   const ratioText = ratioUsed.length
@@ -312,23 +364,15 @@ function renderSection3Target(data) {
     : '—';
   $('prog-label-ratio').textContent = `적용 목표비율: ${ratioText}`;
 
-  // 일평균 KPI
+  // 일평균 KPI (순서: 일 목표 → 이번달 일평균 → 경과 영업일)
   const dailyAvg    = mt.daily_avg_this_month ?? 0;
-  const dailyTarget = projFullTarget > 0 && totalBizDays > 0 ? projFullTarget / totalBizDays : 0;
-  $('v-daily-avg').textContent      = fmtF1(dailyAvg);
+  const dailyTarget = totalBizDays > 0 ? monthlyGoalTotal / totalBizDays : 0;
   $('v-daily-target').textContent   = fmtF1(dailyTarget);
+  $('v-daily-avg').textContent      = fmtF1(dailyAvg);
   $('v-biz-days').textContent       = fmt(elapsedBiz);
   $('v-biz-days-total').textContent = `/ ${fmt(totalBizDays)}일`;
 
-  // 캠페인 누적
-  // aggregation_start_date: 발송건수 집계 시작일 (6/12)
-  // campaign_start_date: 영업일수 계산 시작일 (6/15)
-  const campStartDisplay = cc.aggregation_start_date
-    ? (cc.aggregation_start_date !== cc.campaign_start_date
-        ? `${cc.aggregation_start_date} (집계) · ${cc.campaign_start_date} (영업일 기준)`
-        : cc.campaign_start_date)
-    : (cc.campaign_start_date ?? '—');
-  $('v-camp-start').textContent = campStartDisplay;
+  // 캠페인 누적 (시작일 표기 제거됨)
   $('v-camp-total').textContent = fmt(cc.total_sent_since_start);
   $('v-camp-biz').textContent   = fmt(cc.business_days_since_start);
   $('v-camp-avg').textContent   = `${fmtF1(cc.daily_avg_since_start)}건`;
@@ -336,11 +380,12 @@ function renderSection3Target(data) {
   // 차트
   renderWeeklyChart(wb);
 
-  // TOP10 테이블 (오른쪽 컬럼)
-  renderTop10Table(data.top10_agents ?? []);
+  // TOP10 테이블 x2
+  renderTop10Table('top10-tbody',  data.top10_agents ?? [],         true);
+  renderTop10Table('top10p-tbody', data.top10_partner_agents ?? [], false);
 }
 
-// ── Chart.js 주차별 차트 (라이트 모드 색상) ──────────────
+// ── Chart.js 주차별 차트 ─────────────────────────────────
 function renderWeeklyChart(wb) {
   const ctx = $('weekly-chart').getContext('2d');
   if (weeklyChart) { weeklyChart.destroy(); weeklyChart = null; }
@@ -397,7 +442,6 @@ function renderWeeklyChart(wb) {
           padding: 11,
           titleColor: '#4a5275',
           bodyColor:  '#14172b',
-          boxShadow:  '0 4px 12px rgba(0,0,0,0.1)',
           callbacks: {
             label: ctx => ` ${ctx.dataset.label}: ${fmt(ctx.parsed.y)}건`
           }
@@ -426,21 +470,25 @@ function renderWeeklyChart(wb) {
   });
 }
 
-// ── TOP10 테이블 렌더링 ───────────────────────────────────
-function renderTop10Table(agents) {
-  const tbody = $('top10-tbody');
+// ── TOP10 테이블 렌더링 (공용) ────────────────────────────
+// tbodyId: 대상 tbody, agents: 데이터, showPartnerCol: 제휴 컬럼 표시 여부
+function renderTop10Table(tbodyId, agents, showPartnerCol) {
+  const tbody = $(tbodyId);
+  const colCount = showPartnerCol ? 4 : 3;
   if (!agents.length) {
-    tbody.innerHTML = '<tr><td colspan="4" class="empty-row">데이터 없음</td></tr>';
+    tbody.innerHTML = `<tr><td colspan="${colCount}" class="empty-row">데이터 없음</td></tr>`;
     return;
   }
   const maxCount = agents[0]?.sent_count || 1;
   tbody.innerHTML = agents.map((ag, i) => {
     const rank    = i + 1;
     const rankCls = rank <= 3 ? `rank-badge--${rank}` : 'rank-badge--n';
-    const partnerHtml = ag.is_partner
-      ? '<span class="partner-badge">제휴</span>'
-      : '<span class="nonpartner-badge">—</span>';
-    const barPct = Math.round((ag.sent_count / maxCount) * 100);
+    const barPct  = Math.round((ag.sent_count / maxCount) * 100);
+    const partnerCell = showPartnerCol
+      ? `<td>${ag.is_partner
+          ? '<span class="partner-badge">제휴</span>'
+          : '<span class="nonpartner-badge">—</span>'}</td>`
+      : '';
     return `<tr>
       <td><span class="rank-badge ${rankCls}">${rank}</span></td>
       <td>${escHtml(ag.agency_name || ag.member_id)}</td>
@@ -450,7 +498,7 @@ function renderTop10Table(agents) {
           <span class="sent-count-text">${fmt(ag.sent_count)}</span>
         </div>
       </td>
-      <td>${partnerHtml}</td>
+      ${partnerCell}
     </tr>`;
   }).join('');
 }
