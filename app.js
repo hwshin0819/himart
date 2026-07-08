@@ -26,6 +26,7 @@ let lastData             = null;
 let lastCompare          = null;
 let aggregationStartDate = DEFAULT_CAMPAIGN_START; // 캠페인 전체 퀵버튼 기준
 const responseCache      = new Map();              // [v6.1] 세션 내 응답 캐시 (기간별)
+let top10Tab             = 'all';                  // [v7.2] TOP10 탭 상태: 'all' | 'partner'
 
 // ── DOM 레퍼런스 ───────────────────────────────────────────
 const $ = id => document.getElementById(id);
@@ -98,6 +99,10 @@ function initDateInputs() {
 
 function bindEvents() {
   $('load-btn').addEventListener('click', loadData);
+
+  // [v7.2] TOP10 탭 전환 (재조회 없이 캐시된 데이터로 즉시 전환)
+  $('top10-tab-all').addEventListener('click', () => switchTop10Tab('all'));
+  $('top10-tab-partner').addEventListener('click', () => switchTop10Tab('partner'));
   $('compare-check').addEventListener('change', onCompareToggle);
   ['start-date','end-date','compare-start','compare-end'].forEach(id => {
     $(id).addEventListener('keydown', e => { if (e.key === 'Enter') loadData(); });
@@ -243,8 +248,7 @@ function renderAll(data, compare) {
     const el = $(id);
     if (el) el.textContent = period;
   });
-  $('top10-period-badge').textContent  = period;
-  $('top10p-period-badge').textContent = period;
+  $('top10-period-badge').textContent = period;
 
   renderSection1Agents(data, compare);   // 중개사 참여 (최상단, 알림톡 총 발송 포함)
   renderSection2Mix(data);               // 신청구분/경로 + GA4/CTR (2x2)
@@ -326,7 +330,7 @@ function renderSection2Mix(data) {
 function renderSection3Target(data) {
   const mt = data.monthly_target      ?? {};
   const cc = data.campaign_cumulative ?? {};
-  const wb = data.weekly_breakdown    ?? [];
+  const db = data.daily_breakdown     ?? [];
 
   const totalBizDays = mt.business_days_in_month ?? 1;
   const elapsedBiz   = mt.elapsed_business_days  ?? 1;
@@ -367,23 +371,25 @@ function renderSection3Target(data) {
   $('v-camp-biz').textContent   = fmt(cc.business_days_since_start);
   $('v-camp-avg').textContent   = `${fmtF1(cc.daily_avg_since_start)}건`;
 
-  // 차트
-  renderWeeklyChart(wb);
+  // 차트 (조회 기간 일별)
+  renderDailyChart(db);
 
-  // TOP10 테이블 x2
-  renderTop10Table('top10-tbody',  data.top10_agents ?? [],         true);
-  renderTop10Table('top10p-tbody', data.top10_partner_agents ?? [], false);
+  // TOP10 (현재 선택된 탭 기준)
+  renderTop10CurrentTab();
 }
 
-// ── Chart.js 주차별 차트 ─────────────────────────────────
-function renderWeeklyChart(wb) {
+// ── Chart.js 일별 차트 (조회 기간 기준) ──────────────────
+function renderDailyChart(db) {
   const ctx = $('weekly-chart').getContext('2d');
   if (weeklyChart) { weeklyChart.destroy(); weeklyChart = null; }
-  if (!wb.length) return;
+  if (!db.length) return;
 
-  const labels      = wb.map(w => `${w.week}주 (${shortDate(w.week_start)})`);
-  const sentCounts  = wb.map(w => w.sent_count);
-  const cumulatives = wb.map(w => w.cumulative);
+  const labels      = db.map(d => shortDate(d.date));
+  const sentCounts  = db.map(d => d.sent_count);
+  const cumulatives = db.map(d => d.cumulative);
+
+  // 기간이 길면 x축 라벨 간격 자동 조절
+  const maxTicks = db.length > 40 ? 15 : (db.length > 20 ? 12 : db.length);
 
   weeklyChart = new Chart(ctx, {
     data: {
@@ -391,12 +397,12 @@ function renderWeeklyChart(wb) {
       datasets: [
         {
           type: 'bar',
-          label: '주간 발송건수',
+          label: '일별 발송건수',
           data: sentCounts,
           backgroundColor: 'rgba(59,125,248,0.65)',
           borderColor:     'rgba(59,125,248,0.9)',
           borderWidth: 1,
-          borderRadius: 5,
+          borderRadius: 3,
           borderSkipped: false,
           yAxisID: 'y',
         },
@@ -409,10 +415,10 @@ function renderWeeklyChart(wb) {
           borderWidth: 2.5,
           pointBackgroundColor: '#0ea5a0',
           pointBorderColor: '#fff',
-          pointBorderWidth: 2,
-          pointRadius: 5,
-          pointHoverRadius: 7,
-          tension: 0.35,
+          pointBorderWidth: 1.5,
+          pointRadius: db.length > 20 ? 0 : 4,
+          pointHoverRadius: 6,
+          tension: 0.3,
           fill: true,
           yAxisID: 'y2',
         },
@@ -421,7 +427,7 @@ function renderWeeklyChart(wb) {
     options: {
       responsive: true,
       maintainAspectRatio: false,
-      animation: { duration: 700, easing: 'easeOutQuart' },
+      animation: { duration: 600, easing: 'easeOutQuart' },
       interaction: { mode: 'index', intersect: false },
       plugins: {
         legend: { display: false },
@@ -440,7 +446,7 @@ function renderWeeklyChart(wb) {
       scales: {
         x: {
           grid:   { color: 'rgba(20,23,55,0.06)' },
-          ticks:  { color: '#4a5275', font: { size: 11 } },
+          ticks:  { color: '#4a5275', font: { size: 10 }, maxTicksLimit: maxTicks, maxRotation: 0 },
           border: { color: 'rgba(20,23,55,0.1)' },
         },
         y: {
@@ -458,6 +464,28 @@ function renderWeeklyChart(wb) {
       },
     },
   });
+}
+
+// ── [v7.2] TOP10 탭 전환 ──────────────────────────────────
+function switchTop10Tab(tab) {
+  top10Tab = tab;
+  $('top10-tab-all').classList.toggle('active', tab === 'all');
+  $('top10-tab-partner').classList.toggle('active', tab === 'partner');
+  $('top10-tab-all').setAttribute('aria-selected', tab === 'all');
+  $('top10-tab-partner').setAttribute('aria-selected', tab === 'partner');
+  renderTop10CurrentTab();
+}
+
+// 현재 탭에 맞는 데이터로 TOP10 렌더 (재조회 없음)
+function renderTop10CurrentTab() {
+  if (!lastData) return;
+  const isAll  = top10Tab === 'all';
+  const agents = isAll
+    ? (lastData.top10_agents ?? [])
+    : (lastData.top10_partner_agents ?? []);
+  // 제휴 컬럼: 전체 탭에서만 표시 (제휴중개사 탭은 전부 제휴라 불필요)
+  $('top10-partner-th').style.display = isAll ? '' : 'none';
+  renderTop10Table('top10-tbody', agents, isAll);
 }
 
 // ── TOP10 테이블 렌더링 (공용) ────────────────────────────
