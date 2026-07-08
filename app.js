@@ -358,6 +358,15 @@ function renderSection3Target(data) {
     : '—';
   $('prog-label-ratio').textContent = `적용 목표비율: ${ratioText}`;
 
+  // [v8] 월간 목표 섹션의 고정 배지 — 상단 조회기간과 무관하게 "이번달"임을 명시
+  // ratioUsed[0].from은 이번달 1일(서버 today 기준)이므로 여기서 연/월 라벨을 뽑는다
+  if (ratioUsed.length) {
+    const [y, m] = ratioUsed[0].from.split('-');
+    $('month-period-badge').textContent = `${y}년 ${parseInt(m, 10)}월 고정`;
+  } else {
+    $('month-period-badge').textContent = '이번달 고정';
+  }
+
   // 일평균 KPI (순서: 일 목표 → 이번달 일평균 → 경과 영업일)
   const dailyAvg    = mt.daily_avg_this_month ?? 0;
   const dailyTarget = totalBizDays > 0 ? monthlyGoalTotal / totalBizDays : 0;
@@ -366,10 +375,13 @@ function renderSection3Target(data) {
   $('v-biz-days').textContent       = fmt(elapsedBiz);
   $('v-biz-days-total').textContent = `/ ${fmt(totalBizDays)}일`;
 
-  // 캠페인 누적 (시작일 표기 제거됨)
+  // 캠페인 누적 (상단 배지: 캠페인 시작일부터 고정임을 명시)
   $('v-camp-total').textContent = fmt(cc.total_sent_since_start);
   $('v-camp-biz').textContent   = fmt(cc.business_days_since_start);
   $('v-camp-avg').textContent   = `${fmtF1(cc.daily_avg_since_start)}건`;
+  $('camp-period-badge').textContent = cc.aggregation_start_date
+    ? `${shortDate(cc.aggregation_start_date)}부터 고정`
+    : '캠페인 시작부터 고정';
 
   // 차트 (조회 기간 일별)
   renderDailyChart(db);
