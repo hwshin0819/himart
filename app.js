@@ -16,13 +16,18 @@
 // ── 설정 상수 ──────────────────────────────────────────────
 const API_URL = 'https://script.google.com/macros/s/AKfycby5MF-6W4T_qoNmBGM7hSsuzJDuTBeo_s0rLAZiDGH2BC8EAqfBB1wcQRvdPFzgQZ2g/exec';
 
+// [v6.1] 기본 조회 시작일 = 캠페인 집계시작일
+// (최초 로드 시 사용, 이후 API 응답의 aggregation_start_date로 자동 갱신)
+const DEFAULT_CAMPAIGN_START = '2026-06-12';
+
 // ── 전역 상태 ──────────────────────────────────────────────
 let weeklyChart          = null;
 let compareMode          = false;
 let lastData             = null;
 let lastCompare          = null;
-let aggregationStartDate = null; // 캠페인 전체 퀵버튼 기준 (API 집계시작일)
-let biweeklyPeriod       = null; // 바이위클리 퀵버튼 기준 (API biweekly_period)
+let aggregationStartDate = DEFAULT_CAMPAIGN_START; // 캠페인 전체 퀵버튼 기준
+let biweeklyPeriod       = null;                   // 바이위클리 퀵버튼 기준
+const responseCache      = new Map();              // [v6.1] 세션 내 응답 캐시 (기간별)
 
 // ── DOM 레퍼런스 ───────────────────────────────────────────
 const $ = id => document.getElementById(id);
@@ -83,7 +88,8 @@ document.addEventListener('DOMContentLoaded', () => {
 });
 
 function initDateInputs() {
-  $('start-date').value = monthStartStr();
+  // [v6.1] 기본값 = 캠페인 전체 (집계시작일 ~ 오늘)
+  $('start-date').value = aggregationStartDate || monthStartStr();
   $('end-date').value   = todayStr();
   const now = new Date();
   const prevMonthStart = new Date(now.getFullYear(), now.getMonth() - 1, 1);
@@ -228,10 +234,15 @@ function buildApiUrl(start, end) {
 }
 
 async function fetchJson(url) {
+  // [v6.1] 세션 내 동일 기간 재조회는 캐시에서 즉시 반환
+  if (responseCache.has(url)) return responseCache.get(url);
+
   const res = await fetch(url, { redirect: 'follow' });
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
   const json = await res.json();
   if (json.error) throw new Error(json.message || '서버 오류');
+
+  responseCache.set(url, json);
   return json;
 }
 
